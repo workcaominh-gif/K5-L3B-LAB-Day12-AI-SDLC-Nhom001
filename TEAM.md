@@ -1,6 +1,6 @@
 # TEAM
 
-**Tên nhóm:** Nhom001  **Số người:** 4  (khớp `team_size` trong `game.contract.json`)
+**Tên nhóm:** Nhom001  **Số người:** 5  (khớp `team_size` trong `game.contract.json`)
 
 | Thành viên | GitHub handle | Module chính | Vai quy trình | Người dự phòng cho |
 |---|---|---|---|---|
@@ -8,6 +8,7 @@
 | Hoàng Thế Duyệt | `theduythg` | `sim/quan` | PO (hỏi giảng viên, `docs/clarify.md`) | `sim/gather` |
 | Hoàng Nhật Minh | `NMinh-123` | `client/ui` + `qa` | QA lead / Release | `sim/quan` |
 | Vũ Văn Trường | `Sz3RO` | mở rộng P4 (leaderboard, phụ đề SFX) | Dev mở rộng | `client/ui` |
+| Vũ Đình Huy | `VNno1TH` | `sim/gather` v1.1 + Test Contract v1.1 + test gather (AC-P2) | Dev | `sim/gather` |
 
 **Vai quy trình:** PO (đầu mối hỏi giảng viên, giữ `docs/clarify.md`) · Integrator (giữ `docs/contracts/`, gắn tag) · QA lead · Scrum/Release. Có thể kiêm.
 

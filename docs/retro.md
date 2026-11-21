@@ -42,6 +42,7 @@ Mỗi người tự điền dòng của mình; chi tiết và phản tư ở `do
 | Cao Duy Minh (`workcaominh-gif`) | Integrator, `sim/gather` | Ghép code các lát và gắn tag `phase-1`–`phase-4`, phát hành Release v1.0.0; điều phối agent làm luật lặn/quán (P1–P3), bench + soak (P4), bản GUI (lặn có lao móc và vùng sâu, quán nhà bè, vòng Ngày, chợ Chú Sáu, nhân viên, trang trí, âm thanh), ảnh/video demo; gộp commit của Duyet và Nhật Minh vào `main` sau khi chạy lại test | Tag `37f371d` `4951d27` `ae814d2` `1a9bf8d`; Release v1.0.0; `docs/media/`; 25 commit `cduyminh` + 18 commit `hxlinh` (Phase 1–2, tạo từ máy của Minh); [phản tư](members/workcaominh-gif.md) |
 | Duyet (`theduythg`) | PO, `sim/quan` | _(Duyet tự điền)_ | [phản tư](members/theduythg.md) |
 | Nhật Minh | QA lead / Release, `client/ui` + `qa` | _(Nhật Minh tự điền)_ | [phản tư](members/NMinh-123.md) |
+| Vũ Đình Huy (`VNno1TH`) | Dev, `sim/gather` | Phase 2: Test Contract v1.1 (số chuẩn, 6 nguyên liệu, 6 món, day_plan D1–D5, shop), luật lặn gather v1.1 (cá bơi/sinh theo seed, Cá Sấu Năm Chèo, Máu/ngất, nút kèo nèo), test AC-P2-01…29 | Đồng tác giả `2ecd98f` `494381d` `2c43c8b` (commit `hxlinh`); [phản tư](members/VNno1TH.md) |
 
 ### Hành động tiếp theo (nếu làm lại)
 - PO chốt câu hỏi mở với giảng viên trong 10 phút đầu mỗi phase, ghi giờ hỏi và câu trả lời.

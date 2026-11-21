@@ -1,7 +1,7 @@
 {
   "contract_version": "1.3",
   "team": "Nhom001",
-  "team_size": 4,
+  "team_size": 5,
   "build_cmd": "true",
   "run_cmd": "python3 -m chonoi.live --mode gather",
   "headless_cmd": "python3 -m chonoi.headless",

@@ -80,7 +80,8 @@ class SoLieuChuan(unittest.TestCase):
         c = load_contract()
         self.assertIn(c["contract_version"], ("1.2", "1.3"))
         # team_size 3 -> 4: thêm thành viên Sz3RO vào TEAM.md (mở rộng P4); không phải số liệu gameplay
-        self.assertEqual((c["team"], c["team_size"]), ("Nhom001", 4))
+        # team_size 4 -> 5: thêm thành viên VNno1TH (Vũ Đình Huy) vào TEAM.md; không phải số liệu gameplay
+        self.assertEqual((c["team"], c["team_size"]), ("Nhom001", 5))
         self.assertEqual(G["fish_yield"], {"ca_linh": 3, "ca_loc": 1, "ca_keo": 2})
         self.assertEqual(G["fish_initial"], 8)
         self.assertEqual([(n["id"], n["kind"], n["pos"]) for n in G["nodes"]][4:],
