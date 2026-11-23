@@ -2,10 +2,10 @@
 // Overlay contract: { update(dt), draw(), done }. All text on the crisp UI layer, size ≥ 7.
 import { W, H, screen, input, clamp, ease, txt, panel, measure, wrap } from "./engine.js";
 import { sfx } from "./audio.js";
-import { icon, ICONS, DISH_NAME, KIND_NAME } from "./art.js";
+import { icon, dishIcon, ICONS, DISH_NAME, KIND_NAME } from "./art.js";
 import * as progress from "./progress.js";
 import * as meta from "./meta.js";
-import { GUI_MENU_EXTRA, PREMIUM_HINT } from "./menu.js"; // Đặc sản recipes (Sổ tay)
+import { GUI_MENU_EXTRA, PREMIUM_HINT, isKnownDish, lockedDishes, learnDish, researchCost } from "./menu.js"; // Đặc sản recipes (Sổ tay) + research
 import { playAction, pumpActionCut, drawActionCut, cutsEnabled, toggleCuts, resetSeen, drawRaftThumb } from "./action_cut.js";
 
 export const GOLD = "#ffd23f", BORDER = "#f3d27a", WOOD = "rgba(40,22,12,.96)", WOODL = "#7a4a2a";
@@ -229,17 +229,49 @@ function choreOffers() {
 }
 function catalogPage() {
   const cat = Object.entries(progress.save.catalog || {}).sort((a, b) => (a[1].firstDay || 0) - (b[1].firstDay || 0));
-  const rec = { label: "★ Công thức đặc sản", sub: `${Object.keys(GUI_MENU_EXTRA).length} món từ thịt quý — hạ quái, bắt cá lớn`, right: "▶", rightCol: GOLD, act: (n) => n.push(premiumPage) };
+  const nAll = Object.keys(GUI_MENU_EXTRA).length, nKnown = nAll - lockedDishes().length;
+  const rec = { label: "★ Công thức đặc sản", sub: `Đã học ${nKnown}/${nAll} món — nhờ Bà Tư nghiên cứu món mới`, right: "▶", rightCol: GOLD, act: (n) => n.push(premiumPage) };
   return { title: "Sổ tay", empty: "Chưa ghi con nào. Lặn xuống sông xem có gì nghen!", info: `Đã gặp ${cat.length} loài`,
     items: [rec, ...cat.map(([k, e]) => ({ label: e.name || KIND_NAME[k] || k, icon: ICONS[k] ? icon(k) : null, right: `×${e.caught || 0}`, sub: `Gặp lần đầu: Ngày ${e.firstDay ?? "?"}`,
       act: (n) => n.note(`${e.name || k}: đã bắt ${e.caught || 0} lần.`) }))] };
 }
-// Đặc sản recipes (menu.js GUI_MENU_EXTRA): ingredients, cook time, list price
+// Đặc sản recipes (menu.js GUI_MENU_EXTRA): learned ones show ingredients / cook time / price; locked ones say where to learn
+const recipeText = (m) => Object.entries(m.recipe).map(([k, q]) => `${KIND_NAME[k] || k} ×${q}`).join(" + ");
 function premiumPage() {
-  const rec = (m) => Object.entries(m.recipe).map(([k, q]) => `${KIND_NAME[k] || k} ×${q}`).join(" + ");
+  const rec = recipeText;
   return { title: "Công thức đặc sản", info: (it) => it?.desc || PREMIUM_HINT,
-    items: Object.entries(GUI_MENU_EXTRA).map(([id, m]) => ({ label: DISH_NAME[id] || id, sub: `${rec(m)} · ${m.cook_s} s`, desc: rec(m), right: `${m.price}k`, rightCol: GOLD,
-      act: (n) => n.note(`${DISH_NAME[id] || id}: ${rec(m)}, nấu ${m.cook_s} giây, bán ${m.price}k (khách sộp ×1.5).`) })) };
+    items: Object.entries(GUI_MENU_EXTRA).map(([id, m]) => {
+      const name = DISH_NAME[id] || id;
+      if (!isKnownDish(id)) return { label: name, dim: true, sub: `🔒 Chưa học · nghiên cứu ${researchCost(id)}k với Bà Tư`, desc: `Cần: ${rec(m)} · bán ${m.price}k`, right: "🔒", rightCol: "rgba(255,255,255,.55)",
+        act: (n) => n.note(`${name} chưa học. Ghé Bà Tư → "Nghiên cứu món mới", tốn ${researchCost(id)}k.`) };
+      return { label: name, sub: `Đã học · ${rec(m)} · ${m.cook_s} s`, desc: rec(m), right: "Đã học", rightCol: "#7be08a",
+        act: (n) => n.note(`${name}: ${rec(m)}, nấu ${m.cook_s} giây, bán ${m.price}k (khách sộp ×1.5).`) };
+    }) };
+}
+// Bà Tư → "Nghiên cứu món mới": locked Đặc sản (pay RESEARCH_COST → learned + research cut), then the learned ones
+const RESEARCH_DONE = [
+  "Rồi! {name} Bà nấu thử ngon lắm, con nhớ cách nêm nghen. Có {need} là nấu được liền.",
+  "Đó, {name} vậy đó con. Lửa vừa vừa, nêm từ từ, khách ăn một lần là nhớ quán mình hoài.",
+  "{name} xong rồi! Hồi xưa ông Tư mê món này lắm. Con bán {price}k một phần là vừa.",
+];
+const RESEARCH_ALL = "Hết món để học rồi! Bà truyền nghề cho con hết rồi đó, giữ lửa quán giùm Bà nghen.";
+export function researchRoot() {
+  const locked = lockedDishes(), all = Object.keys(GUI_MENU_EXTRA);
+  const items = locked.map((id) => {
+    const m = GUI_MENU_EXTRA[id], name = DISH_NAME[id] || id, cost = researchCost(id), can = (progress.save.money | 0) >= cost;
+    return { label: name, icon: dishIcon(id), sub: `${recipeText(m)} · bán ${m.price}k`, desc: `Cần: ${recipeText(m)} · nấu ${m.cook_s} s · bán ${m.price}k`,
+      right: `${cost}k`, rightCol: can ? GOLD : "#ff8a7a",
+      act: (n) => {
+        if (!learnDish(id)) return n.note(`Nghiên cứu ${name} tốn ${cost}k lận, ví con còn ${money()}. Bán thêm vài bữa rồi quay lại nghen.`, true);
+        sfx("coin"); n.pop();
+        playAction("research", { id, name, price: m.price, recipe: { ...m.recipe }, cook_s: m.cook_s });
+        const left = lockedDishes().length, need = Object.keys(m.recipe).map((k) => KIND_NAME[k] || k).join(", ");
+        const line = left ? RESEARCH_DONE[(all.length - left - 1) % RESEARCH_DONE.length] : RESEARCH_ALL;
+        return n.note(line.replace("{name}", name).replace("{need}", need).replace("{price}", m.price));
+      } };
+  });
+  for (const id of all) if (!locked.includes(id)) items.push({ label: DISH_NAME[id] || id, icon: dishIcon(id), dim: true, sub: `${recipeText(GUI_MENU_EXTRA[id])} · bán ${GUI_MENU_EXTRA[id].price}k`, right: "Đã học", rightCol: "#7be08a" });
+  return { title: "Nghiên cứu món mới", items, info: (it) => it?.desc || `Ví ${money()} · học rồi là nấu được, bán giá cao` };
 }
 function messagesPage() {
   const ms = meta.getMessages();
@@ -269,6 +301,9 @@ function settingsPage() {
       { label: "Cảnh cắt ngắn", right: cutsEnabled() ? "Bật" : "Tắt", rightCol: cutsEnabled() ? "#7be08a" : "#ff8a7a", sub: "Phim ngắn khi thuê người, mua đồ, trang trí, lãnh thưởng",
         act: (n) => { const on = toggleCuts(); n.note(on ? "Cảnh cắt ngắn: Bật" : "Cảnh cắt ngắn: Tắt — chơi nhanh hơn"); } },
       { label: "Xem lại bản đầy đủ", sub: "Lần tới mỗi cảnh chiếu bản dài một lần nữa", right: "↺", act: (n) => { resetSeen(); n.note("Lần tới sẽ chiếu bản đầy đủ."); } },
+      { label: "Debug: tiền vô hạn", right: progress.unlimitedMoney() ? "Bật" : "Tắt", rightCol: progress.unlimitedMoney() ? "#ffd36b" : "#9a9a9a",
+        sub: "Ví luôn đầy 99999k để thử đồ, thuê người, nghiên cứu món. Tắt là trả lại tiền cũ",
+        act: (n) => { const on = progress.setUnlimitedMoney(!progress.unlimitedMoney()); n.note(on ? "Tiền vô hạn: Bật (ví 99999k)" : "Tiền vô hạn: Tắt — ví về như cũ"); } },
     ] };
 }
 // ---------- the phone ----------

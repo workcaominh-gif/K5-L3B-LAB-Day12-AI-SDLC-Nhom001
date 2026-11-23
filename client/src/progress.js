@@ -29,13 +29,13 @@ export function freshSave() {
   // (bought levels only apply from the NEXT day: main.js calls activateUpgrades() when it builds a new day).
   // rep = reputation carried across days (null = contract reputation_initial); sold = dishes sold over the run.
   return { v: 1, day: 1, money: 0, totalEarned: 0, best: 0, up: { oxy: 0, cap: 0, fins: 0, net: 0, stove: 0, decor: 0, table2: 0, spear: 0 },
-    cu: { oxygen: 0, hp: 0 }, active: { oxygen: 0, hp: 0 }, rep: null, sold: {}, tips: 0, catalog: {}, history: [], hunt: {}, itemSeq: 0, pendingDelivery: [] }; // pendingDelivery: Chợ Chú Sáu purchases [{id, kind, fresh:100}] for the next evening // itemSeq: last freshness item id (I<n>, v1.2)
+    cu: { oxygen: 0, hp: 0 }, active: { oxygen: 0, hp: 0 }, rep: null, sold: {}, tips: 0, catalog: {}, history: [], hunt: {}, itemSeq: 0, pendingDelivery: [], recipes: [] }; // recipes: Đặc sản ids Bà Tư has researched (menu.js learnDish) // pendingDelivery: Chợ Chú Sáu purchases [{id, kind, fresh:100}] for the next evening // itemSeq: last freshness item id (I<n>, v1.2)
 }
 
 export let save = load() || freshSave();
 
 export function load() {
-  try { const raw = localStorage.getItem(KEY); if (!raw) return null; const s = JSON.parse(raw); if (s && s.v === 1) { const f = freshSave(); return { ...f, ...s, up: { ...f.up, ...s.up }, cu: { ...f.cu, ...s.cu }, active: { ...f.active, ...s.active }, sold: { ...s.sold }, hunt: { ...s.hunt }, pendingDelivery: Array.isArray(s.pendingDelivery) ? s.pendingDelivery : [] }; } } catch (e) {}
+  try { const raw = localStorage.getItem(KEY); if (!raw) return null; const s = JSON.parse(raw); if (s && s.v === 1) { const f = freshSave(); return { ...f, ...s, up: { ...f.up, ...s.up }, cu: { ...f.cu, ...s.cu }, active: { ...f.active, ...s.active }, sold: { ...s.sold }, hunt: { ...s.hunt }, pendingDelivery: Array.isArray(s.pendingDelivery) ? s.pendingDelivery : [], recipes: Array.isArray(s.recipes) ? [...s.recipes] : [] }; } } catch (e) {}
   return null;
 }
 // Demo mode (title-menu shortcuts): scenes still read stats()/recordCatch() but nothing is written to storage;
@@ -47,6 +47,34 @@ export function persist() { if (demo) return; try { localStorage.setItem(KEY, JS
 export function hasSave() { const s = load(); return !!(s && (s.day > 1 || s.money > 0)); }
 export function newGame() { const best = save?.best || 0; save = freshSave(); save.best = best; persist(); return save; }
 export function resume() { save = load() || freshSave(); return save; }
+
+// ---- debug: unlimited money (GUI-only test aid) ----
+// On with ?money in the URL (?nomoney turns it off) or the phone's "Cài đặt" app; remembered on this device.
+// While on, the wallet is topped up to RICH every frame (main.js calls topUp); turning it off gives back the
+// amount the wallet had when it was switched on, so a test run doesn't leave a fake fortune in the save.
+const RICH_KEY = "chonoi.debugMoney", RICH = 99999;
+let rich = (() => {
+  try {
+    const q = typeof location !== "undefined" ? location.search : "";
+    if (/[?&]nomoney\b/.test(q)) { localStorage.removeItem(RICH_KEY); return false; }
+    if (/[?&]money\b/.test(q)) { localStorage.setItem(RICH_KEY, "on"); return true; }
+    return localStorage.getItem(RICH_KEY) === "on";
+  } catch (e) { return false; }
+})();
+export const unlimitedMoney = () => rich;
+export function topUp() {
+  if (!rich || !save) return;
+  if (save.moneyBeforeDebug == null) save.moneyBeforeDebug = save.money | 0;
+  if (save.money < RICH) save.money = RICH;
+}
+export function setUnlimitedMoney(on) {
+  rich = !!on;
+  try { rich ? localStorage.setItem(RICH_KEY, "on") : localStorage.removeItem(RICH_KEY); } catch (e) {}
+  if (rich) topUp();
+  else if (save && save.moneyBeforeDebug != null) { save.money = save.moneyBeforeDebug; delete save.moneyBeforeDebug; }
+  persist();
+  return rich;
+}
 
 // Effective tuning = contract values + upgrades. Scenes must read numbers from here, never hard-code.
 export const GUI_HOLD_MUL = 10;

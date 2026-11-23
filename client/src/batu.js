@@ -1,10 +1,11 @@
-// Bà Tư's dialogue overlay (meta.openBaTuDialog): talk · decor · chores · hiring. Overlay contract
+// Bà Tư's dialogue overlay (meta.openBaTuDialog): talk · decor · recipe research · chores · hiring. Overlay contract
 // { update(dt), draw(), done }; the host freezes its own gameplay while it is open.
 import { W, H, screen, input, clamp, ease, txt, panel, measure, wrap } from "./engine.js";
 import { sfx, voiceLine } from "./audio.js";
 import { portrait } from "./art.js";
 import * as progress from "./progress.js";
-import { Nav, drawPage, decorRoot, staffRoot, choresRoot, GOLD, BORDER } from "./phone.js";
+import { Nav, drawPage, decorRoot, staffRoot, choresRoot, researchRoot, GOLD, BORDER } from "./phone.js";
+import { lockedDishes } from "./menu.js"; // recipe research: Đặc sản Bà Tư has not learned yet
 import { pumpActionCut, drawActionCut, drawRaftThumb } from "./action_cut.js";
 import { raftLive } from "./raft.js";
 import * as meta from "./meta.js";
@@ -39,6 +40,8 @@ export class BaTuDialog {
     return { title: "Bà Tư", items: [
       { label: "Nói chuyện", act: () => { const s = progress.save; const i = (s.batuTalk | 0) % STORY.length; s.batuTalk = i + 1; progress.persist(); sfx("click"); this.say(STORY[i]); } },
       { label: "Trang trí quán", act: (n) => { n.push(decorRoot); this.say("Muốn đổi đèn đổi khăn hả? Coi đi, cái nào ưng thì Bà treo cho."); } },
+      { label: "Nghiên cứu món mới", right: (() => { const n = lockedDishes().length; return n ? `${n} món` : "Đủ hết"; })(), rightCol: lockedDishes().length ? GOLD : "#7be08a",
+        act: (n) => { n.push(researchRoot); this.say(lockedDishes().length ? "Muốn Bà chỉ món mới hả? Tốn chút tiền mua đồ nấu thử, mà học rồi là bán được giá cao đó con." : "Đặc sản miền Tây Bà chỉ hết cho con rồi đó! Giờ con nấu còn ngon hơn Bà nữa à nghen."); } },
       { label: "Việc vặt", right: ch ? `${ch} xong` : "", rightCol: "#7be08a", act: (n) => { n.push((m) => choresRoot(m, true)); this.say(ch ? "Làm xong việc rồi thì lãnh thưởng đi con." : "Bà có mấy việc nhỏ nhờ con nè."); } },
       { label: "Thuê người", act: (n) => { n.push(staffRoot); this.say("Quán đông rồi, thuê thêm người phụ cho đỡ. Mà nhớ trả công đàng hoàng nghe."); } },
       { label: "Thôi", act: () => "close" },
@@ -76,7 +79,7 @@ export class BaTuDialog {
     txt(`Ví ${progress.save.money | 0}k · ↑↓ chọn · Enter/E · Esc quay lại`, bx + bw - 6, by + bh - 4, { size: 7, align: "right", color: "rgba(255,255,255,.55)", weight: 700 });
     // menu panel: compact on the root, wide for sub pages
     if (this.nav.stack.length === 1) {
-      const mw = 132, mh = 5 * 16 + 28, mx = W - mw - 16, my = by - mh - 6;
+      const mw = 150, mh = this.nav.page().items.length * 16 + 28, mx = W - mw - 16, my = by - mh - 6;
       panel(mx, my, mw, mh, { fill: "rgba(28,14,10,.95)", border: BORDER, bw: 1.5, r: 6 });
       drawPage(this.nav, mx + 4, my + 4, mw - 8, mh - 8, { size: 9 });
     } else {

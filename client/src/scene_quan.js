@@ -6,7 +6,7 @@ import { W, H, screen, input, clamp, lerp, fx, Particles, txt, panel, measure, w
 import { SERVICE_TIME_S } from "./gui_tuning.js"; // GUI scaling knobs (night shift length)
 import { sfx, music, voiceLine } from "./audio.js";
 import { P, R, ripple, dishIcon, icon, DISH_NAME, KIND_NAME, premiumBadge } from "./art.js";
-import { menuAll, isPremiumDish, isPremiumKind } from "./menu.js"; // contract menu + GUI-only Đặc sản dishes
+import { menuKnown, isPremiumDish, isPremiumKind, lockedDishes, GUI_MENU_EXTRA } from "./menu.js"; // contract menu + the Đặc sản Bà Tư has learned (GUI only)
 import { speedLines } from "./cutscene.js";
 import { highContrast, hc, HC } from "./a11y.js";
 import { promptTag, drawPhoneIcon, PHONE_BTN } from "./hub.js";
@@ -113,7 +113,7 @@ export class QuanScene {
   // opts.onOpen({ menu, portions }) tells main.js what the bell opened with (R on the result replays it).
   constructor(contract, stock, onEnd, opts = {}) {
     this.t = contract.tuning.quan; this.onEnd = onEnd;
-    const t = this.t; this.allMenu = menuAll(contract); // contract dishes + Đặc sản (GUI only)
+    const t = this.t; this.contract = contract; // allMenu (getter) = contract dishes + learned Đặc sản (GUI only)
     this.setMenu(opts && opts.menu, opts && opts.portions);
     this.phase = opts && opts.preopen ? "preopen" : "open";
     this.board = (opts && opts.board) || null; this.boardOpen = false; this.boardSel = null; this.onOpen = opts && opts.onOpen; this.openOpts = opts;
@@ -180,6 +180,17 @@ export class QuanScene {
   }
   // dishes allowed tonight + portion targets (menu board): once sold + open orders reach a target the dish is
   // "Hết suất" and no new guest orders it (they pick another selected dish or go home as no_dish)
+  // "Có thịt cá sấu — nhờ Bà Tư nghiên cứu món mới": premium meat in stock for an Đặc sản Bà Tư has not learned yet
+  lockedStockHint() {
+    for (const id of lockedDishes()) {
+      const k = Object.keys(GUI_MENU_EXTRA[id].recipe).find(isPremiumKind);
+      if (k && (this.stock?.[k] || 0) > 0) return `Có ${KIND_NAME[k] || k} — nhờ Bà Tư nghiên cứu món mới`;
+    }
+    return null;
+  }
+  // read live (menu.js menuKnown): only dishes Bà Tư knows can be set on the menu / ordered / cooked. The menu board
+  // (EveningIntro) is built before the quán, so a dish researched during the pre-open phase shows up from the next evening.
+  get allMenu() { return menuKnown(this.contract); }
   setMenu(menu, portions) {
     const all = this.allMenu, allowed = Array.isArray(menu) ? menu.filter((k) => all[k]) : Object.keys(all);
     this.menu = Object.fromEntries(allowed.map((k) => [k, all[k]]));
@@ -913,6 +924,7 @@ export class QuanScene {
     const a = 0.8 + 0.2 * Math.sin(time * 3);
     panel(W / 2 - 132, 36, 264, 16, { fill: "rgba(42,24,14,.9)", border: "#ffd23a", r: 6, alpha: a });
     txt("Chưa mở quán — đi dạo, nói chuyện với Bà Tư, chọn thực đơn", W / 2, 47, { size: 7.5, align: "center", color: "#ffe9c4", weight: 900 });
+    const lh = this.lockedStockHint(); if (lh) txt("🔒 " + lh, W / 2, 62, { size: 7.5, align: "center", color: "#ffd23a", weight: 900, stroke: "rgba(20,10,4,.85)", sw: 2.5 });
     // chosen menu card (bottom-left, right of the phone icon)
     const sel = this.boardSel || this.board?.selection?.() || { menu: Object.keys(this.menu), portions: this.portions };
     const items = sel.menu.map((k) => dishName(k) + (sel.portions && sel.portions[k] != null ? " ×" + sel.portions[k] : ""));

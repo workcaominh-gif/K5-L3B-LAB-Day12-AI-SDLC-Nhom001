@@ -397,6 +397,7 @@ function loop(ts) {
 // ?debug only: advance n frames synchronously (tests don't depend on rAF, which stalls in hidden tabs)
 function step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) frame(dt); }
 function frame(dt) {
+  progress.topUp(); // debug: unlimited money (?money or phone → Cài đặt)
   if (fx.stop > 0) { fx.stop -= dt; dt *= 0.08; }
   fx.update(dt);
   const typing = !!state.scene?.typing; // Summary name entry: letters are text, not hotkeys

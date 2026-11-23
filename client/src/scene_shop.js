@@ -10,7 +10,7 @@ import { fish, icon, dishIcon, DISH_NAME, KIND_NAME } from "./art.js";
 import { riverWorld } from "./story.js";
 import * as progress from "./progress.js";
 import { OXY_MUL } from "./gui_tuning.js";
-import { menuAll } from "./menu.js";
+import { menuAll, menuKnown } from "./menu.js"; // menuKnown = contract dishes + Đặc sản Bà Tư has researched
 import * as Deep from "./deep.js"; // namespace import: tolerant of the deep agent renaming helpers
 
 const GOLD = "#ffd23f", BORDER = "#f3d27a", INK = "#3a1410";
@@ -51,7 +51,7 @@ export class ShopScene {
     this.mode = MODES[opts.mode] ? opts.mode : "results"; this.cfg = MODES[this.mode];
     this.tabs = this.cfg.tabs; this.ups = this.cfg.ups.filter((id) => progress.UPGRADES[id]);
     this.stock = opts.stock || {};
-    this.dishes = Object.keys(menuAll(contract));
+    this.dishes = Object.keys(menuKnown(contract)); // only dishes Bà Tư knows can go on the menu
     const cookable = this.dishes.filter((d) => this.portions(d) > 0);
     this.on = new Set(cookable.length ? cookable : this.dishes); // default: everything the basket can make
     this.t = 0; this.tab = 0; this.tabT = 0; this.tabDir = 1; this.sel = 0; this.msel = 0; this.leaving = false;
