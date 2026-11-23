@@ -11,6 +11,8 @@ import { personSide } from "./raft.js";
 import * as progress from "./progress.js";
 import { vendorPrices, vendorBuy, vendorSell, vendorSellable, deliveryText, planFor, CU } from "./scene_day.js";
 import { freshCfg } from "./fresh.js";
+import { OXY_MUL } from "./gui_tuning.js";
+import { playAction, pumpActionCut, drawActionCut } from "./action_cut.js";
 
 const GOLD = "#ffd23f", BORDER = "#f3d27a", WOOD = "rgba(58,34,18,.97)", WOODL = "#d9a05a";
 const kindName = (k) => KIND_NAME[k] || k;
@@ -32,6 +34,25 @@ const LINES = {
   max: ["Cái này tối đa rồi, hổng nâng nữa được."],
 };
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
+// "before → after" line for the gear showcase cut (action_cut.js), e.g. "O₂ 90 → 135 s"
+const fmt = (v) => (Math.round(v * 100) / 100).toString();
+const EXTRA_STAT = {
+  cap: (a, b) => `Giỏ +${a} → +${b} món`, fins: (a, b) => `Bơi ×${fmt(a)} → ×${fmt(b)}`, net: (a, b) => `Tầm bắt +${fmt(a)} → +${fmt(b)} m`,
+  spear: (a, b) => `Sát thương ${a} → ${b}`, stove: (a, b) => `Thời gian nấu ×${fmt(a)} → ×${fmt(b)}`, decor: (a, b) => `Kiên nhẫn ×${fmt(a)} → ×${fmt(b)}`,
+  table2: (a, b) => `Bàn ${a} → ${b}`, oxy: (a, b) => `O₂ +${a} → +${b} s`,
+};
+export function gearStatLine(contract, type, id, lvBefore) {
+  try {
+    if (type === "core") {
+      const lv = contract.tuning.shop?.upgrades?.[id] || [], g = contract.tuning.gather || {}, a = lv[lvBefore - 1], b = lv[lvBefore];
+      if (id === "oxygen") return `O₂ ${(a?.oxygen_max_s ?? g.oxygen_max_s) * OXY_MUL} → ${b.oxygen_max_s * OXY_MUL} s`;
+      if (id === "hp") return `Máu ${a?.hp_max ?? g.hp_max} → ${b.hp_max}`;
+      return "";
+    }
+    const u = progress.UPGRADES[id]; if (!u) return "";
+    return (EXTRA_STAT[id] || ((x, y) => `${x} → ${y}`))(u.eff[lvBefore], u.eff[lvBefore + 1]);
+  } catch (e) { return ""; }
+}
 
 // small pixel glyphs for upgrade cards (original, drawn with R)
 function upGlyph(c, id, x, y) {
@@ -129,8 +150,12 @@ export class ShopPopup {
       return this.say(pick(LINES.sell));
     }
     if (cd.price == null) return this.fail("Đã tối đa", LINES.max);
+    const stat = gearStatLine(this.c, cd.type, cd.id, cd.lv | 0);
     const ok = cd.type === "core" ? progress.buyContract(this.c, cd.id) : progress.buy(cd.id);
     if (!ok) return this.fail("Không mua được (thiếu tiền hoặc đã tối đa)", LINES.poor);
+    const glyphId = cd.type === "core" ? (cd.id === "hp" ? "hp" : "oxygen") : cd.id;
+    playAction("gear", { id: cd.id, name: cd.name, stat, glyph: (c, x, y) => upGlyph(c, glyphId, x, y),
+      cta: progress.QUAN_UPGRADES?.includes(cd.id) ? "Dùng ngay" : "Đeo ngay" });
     sfx("coin"); this.pops.push({ text: `-${cd.price}k`, x: bx, y: by, col: "#ffb36b", life: 1 });
     this.msg = { text: `Đã mua ${cd.name}! ${cd.eff.split(" · ").pop()}`, col: "#7dffb0", life: 2 };
     this.say(pick(LINES.up));
@@ -155,6 +180,7 @@ export class ShopPopup {
     this.shown = Math.min(this.line.length, this.shown + dt * 45);
     if (this.closing) { this.k -= dt * 5; if (this.k <= 0 && !this.done) { this.k = 0; this.done = true; this.opts.onClose?.({ bought: this.bought }); } return; }
     this.k = Math.min(1, this.k + dt * 4);
+    if (pumpActionCut(dt)) { this._click = null; return; } // gear showcase cut plays over the pop-up
     if (this.t < 0.15) { this._click = null; return; } // swallow the key / click that opened the shop
     if (this._click) { const p = this._click; this._click = null; this.handleClick(p); return; } // (the click also raised "confirm": ignored)
     if (input.hit("back")) return this.close();
@@ -207,6 +233,7 @@ export class ShopPopup {
     if (this.msg) txt(this.msg.text, PX + PW / 2, PY + PH - 8, { size: 8, align: "center", color: this.msg.col, weight: 900, stroke: "#1a1220", sw: 2 });
     u.restore();
     txt("←→↑↓ chọn · Enter/E: OK · Tab: đổi mục · Esc: Hủy/đóng · chuột: bấm thẻ, OK, Hủy", W / 2, H - 3, { size: 7, align: "center", color: "rgba(255,255,255,.7)", weight: 700, stroke: "rgba(10,8,20,.6)", sw: 2 });
+    drawActionCut();
   }
   drawCard(u, cd, i) {
     const [x, y] = this.cardXY(i), sel = i === this.sel;

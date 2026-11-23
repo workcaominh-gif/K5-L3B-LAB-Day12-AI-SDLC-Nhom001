@@ -5,6 +5,30 @@ import { P, R, ghe, lantern, dishIcon, ripple } from "./art.js";
 
 const TAU = Math.PI * 2;
 
+// ---------- live décor preview / reveal animation (meta.previewDecor, action_cut.js) ----------
+// The quán scene passes its own (stale while an overlay is open) décor values into these helpers. While decorFx.show is
+// set (a preview or a purchase cut is running) the helpers draw decorFx.show instead, and add / hide the flower pieces
+// the scene gates itself (pots / garland / arch), judged from what the scene drew on the previous frame.
+// decorFx.anim = { slot, from, to, k: 0..1, revealX } animates one slot (lanterns light up left→right up to revealX,
+// tablecloths unfurl, flowers bloom, the sign flips). decorFx.inject = false while action_cut.js draws its own diorama.
+export const decorFx = { show: null, anim: null, inject: true };
+// what the quán drew: stamp (performance.now() of the last raft frame), lantern xs, sign centre, rail / landing spots
+export const raftSeen = { stamp: 0, lanterns: [], sign: null, rail: null, land: null, deckY: null, prev: { pots: false, garland: false, arch: false }, cur: { pots: false, garland: false, arch: false } };
+const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+export const raftLive = (ms = 250) => raftSeen.stamp > 0 && nowMs() - raftSeen.stamp < ms; // true while the quán raft is drawn behind us
+const sceneCtx = () => decorFx.inject && decorFx.show;
+const animOf = (slot) => (decorFx.anim && decorFx.anim.slot === slot ? decorFx.anim : null);
+const easeBack = (t) => { t = Math.max(0, Math.min(1, t)); const c = 1.9; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; };
+// bloom scale for a flower piece that needs level `lv`: grows in when a purchase cut crosses that level
+function bloomK(lv) { const a = animOf("flowers"); return a && (a.from | 0) < lv && (a.to | 0) >= lv ? easeBack(a.k) : 1; }
+function grown(c, x, y, k, fn) { if (Math.abs(k - 1) < 0.001) return fn(); if (k <= 0.01) return; c.save(); c.translate(x, y); c.scale(k, k); c.translate(-x, -y); fn(); c.restore(); }
+// quán pot spots (scene_quan: X0 = DECK_L + 22 = 34, XS = 24, Y0 = front edge − 6, ZS = 6): contract x 6.6 / 11.1 / 15.3
+// on the front edge (z .25) and one by Bà Tư (x .5, z 6.5)
+function injectPots(c, t) {
+  const yf = raftSeen.deckY ?? 244;
+  [[6.6, 7, 0], [11.1, 7, 1], [15.3, 7, 2], [0.5, 45, 3]].forEach(([x, dy, k]) => flowerPotRaw(c, Math.round(34 + x * 24), yf - dy, t, k));
+}
+
 // ---------- depth scaling: draw into a scratch canvas, blit back nearest-neighbour ----------
 let scratch = null;
 const SW = 128, SH = 112, AX = 64, AY = 100; // anchor (feet) inside the scratch canvas
@@ -132,6 +156,7 @@ export function kitchenBack(c, x0, x1, yb, t) {
 
 // ---------- roof, posts, lantern strings ----------
 export function roofAndPosts(c, xl, xr, yFront, t) {
+  if (decorFx.inject) { raftSeen.stamp = nowMs(); raftSeen.prev = raftSeen.cur; raftSeen.cur = { pots: false, garland: false, arch: false }; raftSeen.lanterns = []; }
   // side posts (behind everything on the deck)
   R(c, xl, 16, 5, yFront - 16, P.woodD); R(c, xl + 1, 16, 1, yFront - 16, P.wood);
   R(c, xr - 5, 16, 5, yFront - 16, P.woodD); R(c, xr - 4, 16, 1, yFront - 16, P.wood);
@@ -149,14 +174,21 @@ export const LANTERN_SETS = {
   bay_mau: [[P.red, "255,110,90"], [P.orange, "255,160,80"], ["#ffd23a", "255,220,110"], [P.leafL, "150,240,120"], ["#3fb6c4", "110,220,240"], ["#5a6ad8", "140,150,255"], ["#b060d0", "220,140,255"]],
 };
 export function lanternString(c, x0, x1, y0, sag, n, t, out, set = "do", phase = 0) {
+  if (sceneCtx()) set = decorFx.show.lanterns ?? set;
+  const an = animOf("lanterns");
   for (let x = x0; x <= x1; x++) { const u = (x - x0) / (x1 - x0); R(c, x, y0 + Math.round(sag * 4 * u * (1 - u)), 1, 1, "#2a1a12"); }
-  const cols = LANTERN_SETS[set] || LANTERN_SETS.do;
   for (let i = 0; i < n; i++) {
     const u = (i + 0.5) / n, x = Math.round(x0 + (x1 - x0) * u), y = y0 + Math.round(sag * 4 * u * (1 - u));
+    if (decorFx.inject) raftSeen.lanterns.push(x);
+    // purchase cut: unlit until the reveal sweep reaches this lantern, then it pops in with the new colour
+    let st = set, lit = true, pop = 0;
+    if (an) { st = an.to; const d = (an.revealX ?? 1e9) - x; lit = d >= 0; pop = lit && d < 24 ? 1 - d / 24 : 0; }
+    const cols = LANTERN_SETS[st] || LANTERN_SETS.do;
     // bảy màu: colours chase slowly along the string
-    const k = set === "bay_mau" ? (i + phase + Math.floor(t * 1.5)) % cols.length : (i + phase) % cols.length;
-    lantern(c, x, y, t, cols[k][0]);
-    if (out) out.push([x, y + 7, undefined, undefined, cols[k][1]]);
+    const k = st === "bay_mau" ? (i + phase + Math.floor(t * 1.5)) % cols.length : (i + phase) % cols.length;
+    if (!lit) { lantern(c, x, y, 0, "#3a2c2a"); continue; }
+    if (pop > 0) grown(c, x, y + 4, 1 + pop * 0.5, () => lantern(c, x, y, t, cols[k][0])); else lantern(c, x, y, t, cols[k][0]);
+    if (out) out.push([x, y + 7, pop > 0 ? 22 + pop * 26 : undefined, pop > 0 ? 0.1 + pop * 0.2 : undefined, cols[k][1]]);
   }
 }
 // additive warm glow
@@ -186,6 +218,7 @@ export function nightWater(c, y0, y1, t, lights = [], moonX = null) {
 
 // ---------- deck ----------
 export function deck(c, xl, xr, yBack, yFront, t) {
+  if (decorFx.inject) raftSeen.deckY = yFront;
   let y = yBack, row = 0;
   while (y < yFront) {
     const h = Math.min(6, 3 + Math.floor((y - yBack) / 18));
@@ -204,6 +237,7 @@ export function deck(c, xl, xr, yBack, yFront, t) {
   }
 }
 export function backRail(c, x0, x1, y) {
+  if (decorFx.inject) raftSeen.rail = { x0, x1, y };
   R(c, x0, y - 12, x1 - x0, 2, P.woodD); R(c, x0, y - 12, x1 - x0, 1, P.wood);
   for (let x = x0 + 2; x < x1; x += 10) R(c, x, y - 10, 2, 10, P.woodD);
 }
@@ -213,6 +247,13 @@ export function landing(c, x, y, t) {
   R(c, x + 12, y - 22, 3, 26, P.woodD); R(c, x + 12, y - 22, 3, 1, P.woodL);
   R(c, x + 10, y - 10, 7, 1, P.straw);
   lantern(c, x + 13, y - 34, t, P.orange);
+  if (decorFx.inject) raftSeen.land = { x, y };
+  // preview / reveal: add the flower pieces the scene does not draw at its own (older) level
+  if (sceneCtx()) {
+    const fl = decorFx.show.flowers | 0, pv = raftSeen.prev;
+    if (fl >= 2 && !pv.arch) flowerArchRaw(c, x - 6, 26, y, 40, t, bloomK(2));
+    if (fl >= 1 && !pv.pots) injectPots(c, t);
+  }
 }
 // small sampan; face -1 = bow pointing left
 export function sampan(c, x, y, face, t, s = 0.7, o = {}) {
@@ -253,6 +294,17 @@ export function moon(c, x, y) {
 // ---------- décor (Bà Tư's shop: meta.getDecor()) ----------
 // tablecloth over the side table top: "tre" bamboo mat, "ca_ro" red/white check, "hoa" lotus-embroidered pink
 export function tableCloth(c, x, y, kind) {
+  if (sceneCtx()) kind = decorFx.show.cloth ?? kind;
+  const an = animOf("cloth");
+  if (an && an.k < 1) { // unfurl: the old cloth, then the new one sliding out left → right
+    tableClothRaw(c, x, y, an.from);
+    const w = Math.round(36 * Math.max(0, Math.min(1, an.k)));
+    if (w > 0) { c.save(); c.beginPath(); c.rect(x - 18, y - 20, w, 14); c.clip(); tableClothRaw(c, x, y, an.to); c.restore(); R(c, x - 18 + w, y - 16, 1, 6, "rgba(255,255,255,.7)"); }
+    return;
+  }
+  tableClothRaw(c, x, y, an ? an.to : kind);
+}
+function tableClothRaw(c, x, y, kind) {
   const top = y - 15;
   if (kind === "tre") {
     R(c, x - 14, top, 28, 3, "#d9bf7a");
@@ -274,6 +326,15 @@ function blossom(c, x, y, t, i) {
 }
 // terracotta pot of bougainvillea (bông giấy)
 export function flowerPot(c, x, y, t, seed = 0) {
+  if (decorFx.inject) raftSeen.cur.pots = true;
+  if (sceneCtx() && (decorFx.show.flowers | 0) < 1) return;
+  flowerPotRaw(c, x, y, t, seed);
+}
+function flowerPotRaw(c, x, y, t, seed = 0) {
+  const g = bloomK(1); if (g < 0.999 || g > 1.001) return grown(c, x, y, g, () => flowerPotBody(c, x, y, t, seed));
+  flowerPotBody(c, x, y, t, seed);
+}
+function flowerPotBody(c, x, y, t, seed) {
   c.fillStyle = "rgba(0,0,0,.25)"; c.beginPath(); c.ellipse(x, y, 7, 1.5, 0, 0, TAU); c.fill();
   R(c, x - 5, y - 7, 10, 7, "#b8582e"); R(c, x - 6, y - 8, 12, 2, "#d9743e"); R(c, x - 5, y - 2, 10, 2, "#8a3e20");
   R(c, x - 4, y - 14, 1, 6, P.leafD); R(c, x + 2, y - 15, 1, 7, P.leafD);
@@ -285,6 +346,12 @@ export function flowerPot(c, x, y, t, seed = 0) {
 }
 // bougainvillea arch over the gangway (x = left post, w = span, yb = deck level)
 export function flowerArch(c, x, w, yb, h, t) {
+  if (decorFx.inject) raftSeen.cur.arch = true;
+  if (sceneCtx() && (decorFx.show.flowers | 0) < 2) return;
+  flowerArchRaw(c, x, w, yb, h, t, bloomK(2));
+}
+function flowerArchRaw(c, x, w, yb, h, t, g = 1) {
+  if (Math.abs(g - 1) > 0.001) return grown(c, x + w / 2, yb, g, () => flowerArchRaw(c, x, w, yb, h, t, 1));
   R(c, x, yb - h, 2, h, P.woodD); R(c, x + w - 2, yb - h, 2, h, P.woodD);
   for (let k = 0; k <= w; k++) { const u = k / w, yy = yb - h - Math.round(Math.sin(u * Math.PI) * 8); R(c, x + k, yy, 1, 2, P.woodD); }
   let i = 0;
@@ -293,11 +360,38 @@ export function flowerArch(c, x, w, yb, h, t) {
 }
 // garland of blossoms along a beam (flowers level 2)
 export function flowerGarland(c, x0, x1, y, t) {
+  if (decorFx.inject) raftSeen.cur.garland = true;
+  if (sceneCtx() && (decorFx.show.flowers | 0) < 2) return;
+  flowerGarlandRaw(c, x0, x1, y, t);
+}
+function flowerGarlandRaw(c, x0, x1, y, t) {
+  const g = bloomK(2); if (Math.abs(g - 1) > 0.001) return grown(c, (x0 + x1) / 2, y, g, () => flowerGarlandBody(c, x0, x1, y, t));
+  flowerGarlandBody(c, x0, x1, y, t);
+}
+function flowerGarlandBody(c, x0, x1, y, t) {
   for (let x = x0, i = 0; x < x1; x += 7, i++) { R(c, x, y + (i % 2), 4, 2, i % 3 ? P.leaf : P.leafD); blossom(c, x + 2, y - 1 + (i % 2), t, i); }
 }
 // restaurant sign "QUÁN ĂN CHỢ NỔI": board on the pixel canvas, label on the UI layer (skip with label = false)
 // style: "go" carved wood · "den_neon_tre" pink/cyan neon in a bamboo frame (flickers) · "son_mai" red lacquer, gold
 export function quanSign(c, cx, y, style, t, label = true, text = "QUÁN ĂN CHỢ NỔI") {
+  if (sceneCtx()) {
+    style = decorFx.show.sign ?? style;
+    // garland along the back rail (the scene draws it right after the sign when its own level is 2)
+    const rl = raftSeen.rail;
+    if ((decorFx.show.flowers | 0) >= 2 && !raftSeen.prev.garland && rl) flowerGarlandRaw(c, rl.x0 + 2, rl.x1 - 4, rl.y - 14, t);
+  }
+  if (decorFx.inject) raftSeen.sign = { cx, y };
+  const an = animOf("sign");
+  if (an && an.k < 1) { // flip around the horizontal axis: old face, edge-on at k = .5, new face
+    const k = Math.max(0, Math.min(1, an.k)), sy = Math.max(0.06, Math.abs(Math.cos(k * Math.PI)));
+    c.save(); c.translate(0, y + 7); c.scale(1, sy); c.translate(0, -(y + 7));
+    const g = quanSignRaw(c, cx, y, k < 0.5 ? an.from : an.to, t, false, text);
+    c.restore();
+    return g;
+  }
+  return quanSignRaw(c, cx, y, an ? an.to : style, t, label, text);
+}
+function quanSignRaw(c, cx, y, style, t, label, text) {
   const w = 112, h = 15, x = Math.round(cx - w / 2);
   R(c, x + 14, y - 8, 1, 8, "#2a1a12"); R(c, x + w - 15, y - 8, 1, 8, "#2a1a12"); // hanging cords
   let col = "#ffe9c4", stroke = "#3a2210", glowCol = null;

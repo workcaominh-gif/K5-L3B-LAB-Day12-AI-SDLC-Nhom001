@@ -6,6 +6,7 @@ import { icon, ICONS, DISH_NAME, KIND_NAME } from "./art.js";
 import * as progress from "./progress.js";
 import * as meta from "./meta.js";
 import { GUI_MENU_EXTRA, PREMIUM_HINT } from "./menu.js"; // Đặc sản recipes (Sổ tay)
+import { playAction, pumpActionCut, drawActionCut, cutsEnabled, toggleCuts, resetSeen, drawRaftThumb } from "./action_cut.js";
 
 export const GOLD = "#ffd23f", BORDER = "#f3d27a", WOOD = "rgba(40,22,12,.96)", WOODL = "#7a4a2a";
 const DIM = "rgba(255,255,255,.62)";
@@ -24,13 +25,18 @@ const rewardText = (c) => `Thưởng ${c.money || 0}k${c.rep ? ` · +${c.rep} uy
 export class Nav {
   constructor(root, onNote) { this.stack = [{ build: root, sel: 0, top: 0 }]; this.onNote = onNote; this.msg = null; this.msgT = 0; }
   get cur() { return this.stack[this.stack.length - 1]; }
-  page() { return this.cur.build(this) || { title: "", items: [] }; }
-  push(build, sel = 0) { this.stack.push({ build, sel, top: 0 }); sfx("click"); }
-  pop() { if (this.stack.length <= 1) return false; this.stack.pop(); sfx("click"); return true; }
+  page() { const c = this.cur; if (c.custom) return { title: c.custom.title, items: [], custom: c.custom }; return c.build(this) || { title: "", items: [] }; }
+  // custom = a page object with its own update(dt) → "back" | void, draw(x, y, w, h, mode), enter(), leave()
+  push(build, sel = 0, custom = null) { this.stack.push({ build, sel, top: 0, custom }); custom?.enter?.(this); sfx("click"); }
+  pop() { if (this.stack.length <= 1) return false; const e = this.stack.pop(); e.custom?.leave?.(); sfx("click"); return true; }
+  get custom() { return this.cur.custom || null; }
+  // host closing: let every custom page clean up (e.g. the décor preview restores the real décor)
+  dispose() { for (const e of this.stack) e.custom?.leave?.(); }
   note(text, bad = false) { this.msg = text; this.msgBad = bad; this.msgT = 2.6; sfx(bad ? "hurt" : "select"); this.onNote?.(text, bad); }
   // returns "close" when Esc is pressed on the root page
   update(dt) {
     if (this.msgT > 0) this.msgT -= dt;
+    if (this.cur.custom) { if (this.cur.custom.update(dt, this) === "back") this.pop(); return; }
     const pg = this.page(), n = pg.items.length, c = this.cur;
     if (n) c.sel = clamp(c.sel, 0, n - 1);
     if (input.hit("back") || input.hit("close")) { if (!this.pop()) return "close"; return; }
@@ -48,6 +54,7 @@ export class Nav {
 // draws the current page of nav inside the box (x,y,w,h); returns the selected item
 export function drawPage(nav, x, y, w, h, o = {}) {
   const u = screen.ui, pg = nav.page(), c = nav.cur, items = pg.items;
+  if (pg.custom) { pg.custom.draw(x, y, w, h, o.mode || "phone"); return null; }
   const ts = o.size || 8;
   let top = y;
   if (pg.title && !o.noTitle) { txt(pg.title, x + 4, y + 9, { size: ts + 1, color: GOLD, weight: 900 }); top += 14; }
@@ -91,24 +98,97 @@ export function drawPage(nav, x, y, w, h, o = {}) {
 
 // ---------- shared page builders (phone apps + Bà Tư's menu) ----------
 export function decorRoot(nav) {
-  const d = meta.getDecor();
+  const d = meta.realDecor();
   return { title: "Trang trí quán", info: `Khách kiên nhẫn hơn +${Math.round((meta.decorBonus() - 1) * 100)}% · Ví ${money()}`,
-    items: meta.DECOR_SLOTS.map((sl) => ({ label: meta.DECOR[sl].label, sub: `Đang dùng: ${meta.decorItem(sl, d[sl]).name}`,
-      act: (n) => n.push(() => decorSlot(sl), Math.max(0, meta.DECOR[sl].items.findIndex((it) => it.id === meta.getDecor()[sl]))) })) };
+    items: meta.DECOR_SLOTS.map((sl) => ({ label: meta.DECOR[sl].label, sub: `Đang dùng: ${meta.decorItem(sl, d[sl]).name}`, right: "Xem thử ▶", rightCol: "#bff3ff",
+      act: (n) => n.push(null, 0, new DecorBrowser(sl)) })) };
 }
-function decorSlot(sl) {
-  const d = meta.getDecor();
-  return { title: meta.DECOR[sl].label, info: (it) => it?.desc || "",
-    items: meta.DECOR[sl].items.map((it) => {
-      const using = d[sl] === it.id, owned = meta.ownsDecor(sl, it.id);
-      return { label: it.name, desc: it.desc, sub: it.desc, right: using ? "Đang dùng" : owned ? "Đã có" : it.price ? `${it.price}k` : "Miễn phí", rightCol: using ? "#7be08a" : owned ? "#bff3ff" : GOLD,
-        act: (n) => {
-          if (using) return n.note(`${it.name} đang dùng rồi nè.`);
-          if (owned) { meta.applyDecor(sl, it.id); return n.note(`Đổi sang ${it.name.toLowerCase()} rồi đó!`); }
-          if (meta.buyDecor(sl, it.id)) { sfx("coin"); return n.note(`Mua ${it.name.toLowerCase()} (−${it.price}k). Quán đẹp hẳn ra!`); }
-          n.note(`Chưa đủ tiền đâu con, cần ${it.price}k mà ví có ${money()}.`, true);
-        } };
-    }) };
+// "Trang trí quán" item browser with LIVE PREVIEW: moving the selection shows the item on the raft (meta.previewDecor);
+// Enter = "Mua & áp dụng" / "Áp dụng" (owned), Esc = "Hủy" (restores the real décor). Leaving the page always reverts.
+// draw modes: "strip" (Bà Tư's dialog over the live raft: compact, semi-transparent, docked) · "phone" (thumbnail + list)
+export class DecorBrowser {
+  constructor(slot) {
+    this.slot = slot; this.items = meta.DECOR[slot].items; this.title = meta.DECOR[slot].label; this.t = 0;
+    this.sel = Math.max(0, this.items.findIndex((it) => it.id === meta.realDecor()[slot]));
+    this.msg = null; this.msgT = 0;
+  }
+  enter(nav) { this.nav = nav; this.preview(); }
+  leave() { meta.clearPreview(); }
+  preview() { meta.previewDecor(this.slot, this.items[this.sel].id); }
+  get item() { return this.items[this.sel]; }
+  state(it = this.item) { const using = meta.realDecor()[this.slot] === it.id, owned = meta.ownsDecor(this.slot, it.id); return { using, owned }; }
+  note(text, bad = false) { this.msg = text; this.msgBad = bad; this.msgT = 2.6; sfx(bad ? "hurt" : "select"); this.nav?.onNote?.(text, bad); }
+  move(d) { const n = this.items.length; this.sel = (this.sel + d + n) % n; sfx("click"); this.preview(); }
+  update(dt) {
+    this.t += dt; if (this.msgT > 0) this.msgT -= dt;
+    if (input.hit("back") || input.hit("close")) { this.note("Thôi, để y như cũ."); return "back"; } // Hủy: pop() → leave() reverts
+    if (input.hit("left") || input.hit("up")) this.move(-1);
+    if (input.hit("right") || input.hit("down")) this.move(1);
+    if (input.hit("confirm") || input.hit("interact") || input.hit("catch")) this.act();
+  }
+  act() {
+    const it = this.item, sl = this.slot, { using, owned } = this.state(), from = meta.realDecor()[sl];
+    if (using) return this.note(`${it.name} đang dùng rồi nè.`);
+    if (owned) { meta.applyDecor(sl, it.id); this.preview(); return this.note(`Đổi sang ${it.name.toLowerCase()} rồi đó!`); }
+    if (meta.buyDecor(sl, it.id)) { sfx("coin"); this.preview(); playAction("decor", { slot: sl, from, to: it.id }); return this.note(`Mua ${it.name.toLowerCase()} (−${it.price}k). Quán đẹp hẳn ra!`); }
+    this.note(`Chưa đủ tiền đâu con, cần ${it.price}k mà ví có ${money()}.`, true);
+  }
+  primaryLabel() { const { using, owned } = this.state(); return using ? "Đang dùng" : owned ? "Áp dụng" : `Mua & áp dụng`; }
+  priceText(it = this.item) { const { using, owned } = this.state(it); return using ? "Đang dùng" : owned ? "Đã có" : it.price ? `${it.price}k` : "Miễn phí"; }
+  badge(x, y) {
+    const pulse = 0.75 + 0.25 * Math.sin(this.t * 5);
+    panel(x, y, 46, 12, { fill: `rgba(181,70,46,${pulse})`, border: "#fff", r: 3, bw: 0.8 });
+    txt("XEM THỬ", x + 23, y + 9, { size: 7.5, align: "center", color: "#fff", weight: 900 });
+  }
+  buttons(x, y, w) {
+    const { using, owned } = this.state(), can = using || owned || progress.save.money >= this.item.price;
+    const bw = w - 48;
+    panel(x, y, bw, 16, { fill: using ? "rgba(60,110,60,.9)" : can ? "rgba(200,90,30,.95)" : "rgba(140,110,90,.8)", border: using ? "#7be08a" : can ? GOLD : "#6a5040", bw: 1.3, r: 5 });
+    txt((using ? "✓ " : "Enter · ") + this.primaryLabel(), x + bw / 2, y + 11.5, { size: 8, align: "center", color: "#fff", weight: 900 });
+    panel(x + bw + 4, y, 44, 16, { fill: "rgba(90,60,40,.9)", border: "#3a2410", bw: 1.2, r: 5 });
+    txt("Esc · Hủy", x + bw + 26, y + 11.5, { size: 7.5, align: "center", color: "#ffe9c4", weight: 900 });
+  }
+  draw(x, y, w, h, mode = "phone") {
+    const it = this.item;
+    if (mode === "strip") {
+      // compact horizontal strip: [badge · slot] [chips…] | [price · buttons] / desc
+      panel(x, y, w, h, { fill: "rgba(28,14,10,.72)", border: BORDER, bw: 1.2, r: 6 });
+      this.badge(x + 6, y + 5);
+      txt(`${this.title} · ←→ xem thử`, x + 58, y + 14, { size: 8.5, color: GOLD, weight: 900 });
+      txt(`Ví ${money()}`, x + w - 8, y + 14, { size: 8, align: "right", color: GOLD, weight: 900 });
+      const rw = 150, cw = (w - rw - 16) / this.items.length;
+      this.items.forEach((o, i) => {
+        const cx = x + 6 + i * cw, on = i === this.sel, st = this.state(o);
+        panel(cx, y + 20, cw - 4, 28, { fill: on ? "rgba(255,160,60,.35)" : "rgba(0,0,0,.35)", border: on ? GOLD : "rgba(243,210,122,.3)", bw: on ? 1.4 : 0.8, r: 4 });
+        txt(ellip(o.name, cw - 10, 7.5), cx + 4, y + 31, { size: 7.5, color: on ? "#fff" : "#f6efe0", weight: 800 });
+        txt(this.priceText(o), cx + 4, y + 43, { size: 7, color: st.using ? "#7be08a" : st.owned ? "#bff3ff" : GOLD, weight: 900 });
+      });
+      const rx = x + w - rw - 4;
+      txt(it.name, rx, y + 30, { size: 8.5, color: "#fff", weight: 900 });
+      txt(this.priceText(), x + w - 8, y + 30, { size: 9, align: "right", color: this.state().using ? "#7be08a" : GOLD, weight: 900 });
+      this.buttons(rx, y + 34, rw - 4);
+      const msg = this.msgT > 0 ? this.msg : it.desc;
+      txt(ellip(msg, w - 14, 7.5, 700), x + 6, y + h - 6, { size: 7.5, color: this.msgT > 0 ? (this.msgBad ? "#ff9a8a" : "#7be08a") : "#bff3ff", weight: 700 });
+      return;
+    }
+    // phone: live thumbnail, then a compact list, then the buttons
+    const th = Math.round(w * 0.5);
+    drawRaftThumb(screen.ui, x + 2, y + 2, w - 4, th, this.t);
+    let yy = y + th + 8;
+    txt(this.title, x + 4, yy + 4, { size: 8, color: GOLD, weight: 900 });
+    yy += 8;
+    const rowH = 12, maxRows = Math.max(1, Math.floor((y + h - 38 - yy) / rowH));
+    const top = clamp(this.sel - maxRows + 1, 0, Math.max(0, this.items.length - maxRows));
+    this.items.slice(top, top + maxRows).forEach((o, j) => {
+      const i = top + j, on = i === this.sel, st = this.state(o), ry = yy + j * rowH;
+      if (on) panel(x + 1, ry, w - 2, rowH - 1, { fill: "rgba(255,160,60,.24)", border: GOLD, r: 3 });
+      txt((on ? "▶ " : "  ") + ellip(o.name, w - 60, 7), x + 4, ry + 8.5, { size: 7, color: on ? "#fff" : "#f6efe0", weight: 800 });
+      txt(this.priceText(o), x + w - 4, ry + 8.5, { size: 7, align: "right", color: st.using ? "#7be08a" : st.owned ? "#bff3ff" : GOLD, weight: 900 });
+    });
+    this.buttons(x + 2, y + h - 34, w - 4);
+    const msg = this.msgT > 0 ? this.msg : it.desc;
+    txt(ellip(msg, w - 8, 6.5, 700), x + 4, y + h - 8, { size: 6.5, color: this.msgT > 0 ? (this.msgBad ? "#ff9a8a" : "#7be08a") : "#bff3ff", weight: 700 });
+  }
 }
 export function staffRoot(nav) {
   const st = meta.getStaff();
@@ -122,8 +202,8 @@ export function staffRoot(nav) {
 }
 function staffActions(id) {
   const S = meta.STAFF[id], lv = meta.getStaff()[id], items = [];
-  if (lv === 0) { const L = S.levels[1]; items.push({ label: `Thuê ${S.short}`, sub: `${L.cost}k · công ${L.wage}k/ngày`, right: `${L.cost}k`, act: (n) => { if (meta.hire(id)) { sfx("coin"); n.pop(); return n.note(`${S.short} vô làm từ tối nay! Công ${L.wage}k mỗi ngày.`); } n.note(`Thuê ${S.short} cần ${L.cost}k, ví còn ${money()}.`, true); } }); }
-  if (lv === 1) { const L = S.levels[2]; items.push({ label: "Đào tạo lên bậc 2", sub: `${L.cost}k · công tăng lên ${L.wage}k/ngày · ${L.desc}`, right: `${L.cost}k`, act: (n) => { if (meta.train(id)) { sfx("coin"); n.pop(); return n.note(`${S.short} lên bậc 2 rồi, ${L.desc}!`); } n.note(`Đào tạo cần ${L.cost}k, ví còn ${money()}.`, true); } }); }
+  if (lv === 0) { const L = S.levels[1]; items.push({ label: `Thuê ${S.short}`, sub: `${L.cost}k · công ${L.wage}k/ngày`, right: `${L.cost}k`, act: (n) => { if (meta.hire(id)) { sfx("coin"); n.pop(); playAction("hire", { id }); return n.note(`${S.short} vô làm từ tối nay! Công ${L.wage}k mỗi ngày.`); } n.note(`Thuê ${S.short} cần ${L.cost}k, ví còn ${money()}.`, true); } }); }
+  if (lv === 1) { const L = S.levels[2]; items.push({ label: "Đào tạo lên bậc 2", sub: `${L.cost}k · công tăng lên ${L.wage}k/ngày · ${L.desc}`, right: `${L.cost}k`, act: (n) => { if (meta.train(id)) { sfx("coin"); n.pop(); playAction("train", { id }); return n.note(`${S.short} lên bậc 2 rồi, ${L.desc}!`); } n.note(`Đào tạo cần ${L.cost}k, ví còn ${money()}.`, true); } }); }
   if (lv > 0) items.push({ label: "Cho nghỉ việc", sub: "Không trả công nữa, mất bậc đã học", rightCol: "#ff8a7a", right: "!", act: (n) => n.push(() => ({ title: `Cho ${S.short} nghỉ?`, items: [
     { label: "Ừ, cho nghỉ", act: (m) => { meta.fire(id); m.pop(); m.pop(); m.note(`${S.short} đã nghỉ. Buồn ghê...`); } },
     { label: "Thôi, giữ lại", act: (m) => m.pop() }] }), 1) });
@@ -137,7 +217,7 @@ export function choresRoot(nav, canAccept) {
     act: (n) => {
       if (!c.done) return n.note(c.line);
       const r = meta.claimReward(c.id); if (!r) return;
-      sfx("coin"); n.note(`Giỏi quá! Bà thưởng ${r.money}k${r.rep ? `, uy tín +${r.rep}` : ""}.`);
+      sfx("coin"); playAction("chore", { title: c.title, money: r.money, rep: r.rep }); n.note(`Giỏi quá! Bà thưởng ${r.money}k${r.rep ? `, uy tín +${r.rep}` : ""}.`);
     } }));
   if (canAccept && act.length < meta.MAX_CHORES) items.push({ label: "Nhận việc mới…", sub: `Đang làm ${act.length}/${meta.MAX_CHORES} việc`, right: "+", act: (n) => n.push(choreOffers) });
   return { title: "Việc vặt", items, empty: canAccept ? "" : "Chưa có việc nào. Ghé Bà Tư ở quán để nhận việc nghen.",
@@ -182,6 +262,15 @@ function marketPage() {
   return { title: "Thời tiết · Chợ", items: lines, info: "Ghe hàng nhóm chợ lúc 5 giờ sáng" };
 }
 
+// "Cài đặt": action cutscenes on/off (persisted in localStorage by action_cut.js)
+function settingsPage() {
+  return { title: "Cài đặt", info: "Lưu trên máy này",
+    items: [
+      { label: "Cảnh cắt ngắn", right: cutsEnabled() ? "Bật" : "Tắt", rightCol: cutsEnabled() ? "#7be08a" : "#ff8a7a", sub: "Phim ngắn khi thuê người, mua đồ, trang trí, lãnh thưởng",
+        act: (n) => { const on = toggleCuts(); n.note(on ? "Cảnh cắt ngắn: Bật" : "Cảnh cắt ngắn: Tắt — chơi nhanh hơn"); } },
+      { label: "Xem lại bản đầy đủ", sub: "Lần tới mỗi cảnh chiếu bản dài một lần nữa", right: "↺", act: (n) => { resetSeen(); n.note("Lần tới sẽ chiếu bản đầy đủ."); } },
+    ] };
+}
 // ---------- the phone ----------
 const APPS = [
   { id: "chores", name: "Việc vặt", glyph: "✔", col: "#d94a3d", build: (n) => choresRoot(n, false) },
@@ -190,7 +279,9 @@ const APPS = [
   { id: "decor", name: "Trang trí", glyph: "✿", col: "#c05a9a", build: decorRoot },
   { id: "msg", name: "Tin nhắn", glyph: "✉", col: "#3a8a3a", build: messagesPage },
   { id: "market", name: "Chợ", glyph: "☀", col: "#e0a020", build: marketPage },
+  { id: "settings", name: "Cài đặt", glyph: "⚙", col: "#5a6a7a", build: settingsPage },
 ];
+const COLS = 4;
 const PW = 176, PH = 244;
 export class Phone {
   constructor(onClose, opts = {}) {
@@ -199,7 +290,7 @@ export class Phone {
     if (opts.app) this.openApp(Math.max(0, APPS.findIndex((a) => a.id === opts.app)));
     sfx("whoosh");
   }
-  close() { if (this.closing) return; this.closing = true; sfx("click"); }
+  close() { if (this.closing) return; this.closing = true; this.nav?.dispose(); meta.clearPreview(); sfx("click"); }
   openApp(i) {
     this.sel = i; this.app = APPS[i];
     this.nav = new Nav(this.app.build, (text, bad) => { this.toast = text; this.toastBad = bad; this.toastT = 2.8; });
@@ -208,13 +299,14 @@ export class Phone {
   }
   update(dt) {
     this.t += dt;
-    if (this.closing) { this.k -= dt * 4; if (this.k <= 0 && !this.done) { this.k = 0; this.done = true; this.onClose?.(); } return; }
+    if (this.closing) { this.k -= dt * 4; if (this.k <= 0 && !this.done) { this.k = 0; this.done = true; meta.clearPreview(); this.onClose?.(); } return; }
     this.k = Math.min(1, this.k + dt * 3.5);
+    if (pumpActionCut(dt)) return; // an action cut (hire / décor / chore…) plays over the phone
     if (this.toastT > 0) this.toastT -= dt;
     if (this.t < 0.12) return; // swallow the key that opened us
-    if (this.app) { if (this.nav.update(dt) === "close") { this.app = null; this.nav = null; sfx("click"); } return; }
+    if (this.app) { if (this.nav.update(dt) === "close") { this.nav.dispose(); this.app = null; this.nav = null; sfx("click"); } return; }
     if (input.hit("back") || input.hit("close")) return this.close();
-    const n = APPS.length, cols = 3;
+    const n = APPS.length, cols = COLS;
     if (input.hit("left")) { this.sel = (this.sel + n - 1) % n; sfx("click"); }
     if (input.hit("right")) { this.sel = (this.sel + 1) % n; sfx("click"); }
     if (input.hit("up")) { this.sel = (this.sel + n - cols) % n; sfx("click"); }
@@ -256,19 +348,20 @@ export class Phone {
     // key hints beside the phone
     const hint = this.app ? ["↑↓ chọn", "Enter/E: mở", "Esc: quay lại"] : ["←↑↓→ chọn app", "Enter/E: mở", "T/Esc: cất máy"];
     hint.forEach((h, i) => txt(h, px + PW + 12, py + PH - 40 + i * 11, { size: 7.5, color: "rgba(255,255,255,.7)", weight: 700, alpha: e }));
+    drawActionCut();
   }
   drawHome(x, y, w, h) {
-    const u = screen.ui, cols = 3, cw = w / cols, s = progress.save;
+    const u = screen.ui, cols = COLS, cw = w / cols, s = progress.save;
     txt("Điện thoại của Sen", x + w / 2, y + 12, { size: 8, align: "center", color: "#dff4ff", weight: 900 });
     const unread = meta.unreadCount(), doneCh = meta.getChores().filter((c) => c.done).length;
     APPS.forEach((a, i) => {
       const cx = x + cw * (i % cols) + cw / 2, cy = y + 24 + Math.floor(i / cols) * 44, on = i === this.sel;
       const bob = on ? Math.sin(this.t * 6) * 1 : 0;
-      if (on) panel(cx - 19, cy - 3 + bob, 38, 40, { fill: "rgba(255,210,63,.18)", border: GOLD, r: 6 });
+      if (on) panel(cx - 18, cy - 3 + bob, 36, 40, { fill: "rgba(255,210,63,.18)", border: GOLD, r: 6 });
       panel(cx - 13, cy + bob, 26, 24, { fill: a.col, border: "rgba(255,255,255,.5)", r: 6 });
       if (a.ic) { u.imageSmoothingEnabled = false; u.drawImage(icon(a.ic), cx - 8, cy + 4 + bob, 16, 16); }
       else txt(a.glyph, cx, cy + 17 + bob, { size: 13, align: "center", color: "#fff", weight: 900 });
-      txt(a.name, cx, cy + 33 + bob, { size: 7, align: "center", color: on ? "#fff" : "#cfe", weight: 800 });
+      txt(ellip(a.name, cw - 1, 7, 800), cx, cy + 33 + bob, { size: 7, align: "center", color: on ? "#fff" : "#cfe", weight: 800 });
       const badge = a.id === "msg" ? unread : a.id === "chores" ? doneCh : 0;
       if (badge) { panel(cx + 8, cy - 4 + bob, 11, 9, { fill: "#ff4a3d", border: "#fff", r: 4, bw: 0.8 }); txt(String(Math.min(9, badge)), cx + 13.5, cy + 3 + bob, { size: 7, align: "center", color: "#fff", weight: 900 }); }
     });

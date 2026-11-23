@@ -5,6 +5,9 @@ import { sfx, voiceLine } from "./audio.js";
 import { portrait } from "./art.js";
 import * as progress from "./progress.js";
 import { Nav, drawPage, decorRoot, staffRoot, choresRoot, GOLD, BORDER } from "./phone.js";
+import { pumpActionCut, drawActionCut, drawRaftThumb } from "./action_cut.js";
+import { raftLive } from "./raft.js";
+import * as meta from "./meta.js";
 
 const STORY = [
   "Hồi Bà mười bảy tuổi, Bà chèo xuồng bán bún riêu ở chợ nổi. Sáng nào cũng dậy từ ba giờ, sương ướt hết tóc.",
@@ -41,17 +44,20 @@ export class BaTuDialog {
       { label: "Thôi", act: () => "close" },
     ] };
   }
-  close() { if (this.closing) return; this.closing = true; sfx("click"); }
+  // restores the real décor BEFORE the host's onClose (scene_quan re-reads meta.getDecor() there)
+  close() { if (this.closing) return; this.closing = true; this.nav.dispose(); meta.clearPreview(); sfx("click"); }
   update(dt) {
     this.t += dt;
-    if (this.closing) { this.k -= dt * 5; if (this.k <= 0 && !this.done) { this.k = 0; this.done = true; this.onClose?.(); } return; }
+    if (this.closing) { this.k -= dt * 5; if (this.k <= 0 && !this.done) { this.k = 0; this.done = true; meta.clearPreview(); this.onClose?.(); } return; }
     this.k = Math.min(1, this.k + dt * 4);
+    if (pumpActionCut(dt)) return; // hire / décor / chore cuts play over the dialog (the scene behind stays frozen)
     this.shown = Math.min(this.line.length, this.shown + dt * 45);
     if (this.t < 0.15) return; // swallow the key that opened the dialogue
     if (this.nav.update(dt) === "close") { this.say("Ừ, đi làm đi con. Có gì cứ ghé Bà."); this.close(); }
   }
   draw() {
     const u = screen.ui, e = ease.out(clamp(this.k, 0, 1));
+    if (this.nav.custom && !this.closing) { this.drawPreview(u, e); drawActionCut(); return; }
     u.save(); u.fillStyle = `rgba(4,8,20,${0.6 * e})`; u.fillRect(0, 0, W, H); u.restore();
     u.save(); u.globalAlpha = e;
     const off = (1 - e) * 30;
@@ -78,6 +84,25 @@ export class BaTuDialog {
       panel(mx, my, mw, mh, { fill: "rgba(28,14,10,.95)", border: BORDER, bw: 1.5, r: 6 });
       drawPage(this.nav, mx + 6, my + 4, mw - 12, mh - 8, { size: 8.5 });
     }
+    u.restore();
+    drawActionCut();
+  }
+  // "Trang trí quán" item browser: over the live quán raft the panel is a compact semi-transparent strip docked away from
+  // what is being previewed (lanterns / sign → bottom, cloth / flowers → top); elsewhere (dock hub) a live thumbnail
+  drawPreview(u, e) {
+    const live = raftLive(), b = this.nav.custom, slot = b.slot, h = 66, w = W - 28;
+    u.save(); u.globalAlpha = e;
+    if (!live) { u.fillStyle = "rgba(4,8,20,.6)"; u.fillRect(0, 0, W, H); }
+    const atTop = live && (slot === "cloth" || slot === "flowers");
+    const y = atTop ? 6 : H - h - 6;
+    if (!live) {
+      const tw = 236, th = Math.round(tw * 0.5);
+      drawRaftThumb(u, W / 2 - tw / 2, Math.max(8, y - th - 14), tw, th, this.t);
+    }
+    b.draw(14, y, w, h, "strip");
+    // Bà Tư's line, small, beside the strip (the big dialogue box would cover the raft)
+    const ln = wrap(this.line, w - 40, 7.5)[0] || "";
+    txt(`Bà Tư: ${ln.slice(0, Math.floor(this.shown))}`, 18, atTop ? y + h + 11 : y - 5, { size: 7.5, color: "#fff", weight: 800, stroke: "rgba(10,8,20,.8)", sw: 2.5 });
     u.restore();
   }
 }

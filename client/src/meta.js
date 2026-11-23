@@ -4,6 +4,7 @@
 // Overlays (openBaTuDialog / openPhone) follow the host contract { update(dt), draw(), done }:
 // the host scene freezes its own gameplay while one is open and drops it once `done` is true.
 import * as progress from "./progress.js";
+import { decorFx } from "./raft.js"; // live décor preview: raft.js draws decorFx.show over the scene's own décor
 
 const S = () => progress.save; // live binding: newGame()/resume() replace the object
 
@@ -98,20 +99,31 @@ function decorState() {
   }
   return d;
 }
-export function getDecor() { const d = decorState(); return { lanterns: d.lanterns, cloth: d.cloth, flowers: d.flowers, sign: d.sign }; }
+// the applied décor (never the preview)
+export function realDecor() { const d = decorState(); return { lanterns: d.lanterns, cloth: d.cloth, flowers: d.flowers, sign: d.sign }; }
+// what the raft shows: the applied décor with the slot being previewed swapped in ("Trang trí quán" browsing)
+export function getDecor() { const d = realDecor(); if (preview) d[preview.slot] = preview.id; return d; }
+// ---- live preview: browsing an item shows it on the raft (raft.js decorFx) until clearPreview() ----
+let preview = null, decorAnim = null;
+export function previewDecor(slot, id) { if (!decorItem(slot, id)) return false; preview = { slot, id }; syncDecorFx(); return true; }
+export function clearPreview() { if (!preview) return; preview = null; syncDecorFx(); }
+export function previewing() { return preview ? { ...preview } : null; }
+// purchase cut (action_cut.js): { slot, from, to, k, revealX } animates one slot on the raft; null ends it
+export function setDecorAnim(a) { decorAnim = a || null; syncDecorFx(); }
+function syncDecorFx() { decorFx.show = preview || decorAnim ? getDecor() : null; decorFx.anim = decorAnim; }
 export function decorItem(slot, id) { return DECOR[slot]?.items.find((it) => it.id === id) || null; }
 export function ownsDecor(slot, id) { return decorState().owned[slot]?.includes(id) || false; }
 export function ownedDecor() { const d = decorState(); const o = {}; for (const sl of DECOR_SLOTS) o[sl] = [...d.owned[sl]]; return o; }
 export function applyDecor(slot, id) {
   const d = decorState(); if (!decorItem(slot, id) || !d.owned[slot].includes(id)) return false;
-  d[slot] = id; progress.persist(); return true;
+  d[slot] = id; progress.persist(); syncDecorFx(); return true;
 }
 // buys (if not owned) and applies; false when unknown or not enough money
 export function buyDecor(slot, id) {
   const d = decorState(), it = decorItem(slot, id), s = S(); if (!it) return false;
   if (d.owned[slot].includes(id)) return applyDecor(slot, id);
   if (s.money < it.price) return false;
-  s.money -= it.price; d.owned[slot].push(id); d[slot] = id; progress.persist(); return true;
+  s.money -= it.price; d.owned[slot].push(id); d[slot] = id; progress.persist(); syncDecorFx(); return true;
 }
 // customer patience multiplier from the applied decor: +3 % per non-default item, +1 % per tier above the
 // first (bảy màu = +5 %), capped at +15 %. Always ≥ 1.

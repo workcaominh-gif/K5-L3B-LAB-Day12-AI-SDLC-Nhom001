@@ -1,7 +1,8 @@
 // Music = generative WebAudio engine (music.js) for theme/underwater/restaurant/cut_dawn/cut_dusk; any other name, or every name
 // with ?music=files in the URL, plays the manifest <audio> file (crossfaded).
 // SFX = file if the manifest has one, else a small, mellow WebAudio synth. Cutscene stingers (riser, boom, hero_hit,
-// title_hit, swish, splash_big, bell/bellN, drumroll, sting_win) are always synth, on their own bus. Babble = voice.js.
+// title_hit, swish, splash_big, bell/bellN, drumroll, sting_win; action cuts: jingle(kind), coin_shower, sparkle, unfurl,
+// flip) are always synth, on their own bus. Babble = voice.js.
 import { createMusic } from "./music.js";
 import { createVoice } from "./voice.js";
 import { caption } from "./captions.js";
@@ -75,6 +76,7 @@ function fadeOut(a) {
   };
   step();
 }
+export const musicName = () => currentName;
 export function stopMusic() { if (current) fadeOut(current); if (gen) gen.stop(); current = null; currentName = null; pending = null; }
 
 // ---------- dialogue babble ----------
@@ -344,6 +346,35 @@ const CINE = {
     taiko(h, 0.5);
     bellNote(h + 0.05, 84, 0.05, 1.8); bellNote(h + 0.12, 91, 0.04, 1.8);
   },
+  // ---- action cuts (action_cut.js) ----
+  // short pentatonic jingles (đàn tranh plucks + bells + soft FM pad): "hire" bright and bouncy, "warm" slow and glowing
+  // (décor), "coins" quick and sparkly (chore reward), "level" rising (training / gear)
+  jingle: (kind = "hire") => {
+    const t = ac.currentTime + 0.01;
+    const J = {
+      hire: { base: 67, steps: [0, 2, 4, 2, 5, 7], dt: 0.12, chord: [55, 62, 67, 71], bell: 86 },
+      warm: { base: 60, steps: [0, 2, 3, 4, 3, 5], dt: 0.2, chord: [48, 55, 60, 64, 67], bell: 84 },
+      coins: { base: 72, steps: [0, 1, 2, 3, 4, 5, 7], dt: 0.07, chord: [60, 67, 72, 76], bell: 91 },
+      level: { base: 65, steps: [0, 1, 2, 3, 4, 5, 6, 7], dt: 0.08, chord: [53, 60, 65, 69, 72], bell: 89 },
+    }[kind] || null;
+    if (!J) return;
+    J.steps.forEach((st, k) => ksPluck(t + k * J.dt, penta(J.base - (J.base % 12), st + Math.floor((J.base % 12) / 2)), 0.12, 1.3, 0.6));
+    const h = t + J.steps.length * J.dt;
+    J.chord.forEach((n, k) => fm({ t: h + k * 0.01, f: mtof(n), dur: 1.4, vol: 0.035, ratio: 2, i0: 1.2, i1: 0.3, a: 0.05, send: 0.6, lp: 3000 }));
+    bellNote(h, J.bell, 0.06, 2); bellNote(h + 0.09, J.bell + 7, 0.04, 2);
+    duck(J.steps.length * J.dt + 1.2, 0.45);
+  },
+  // a shower of coin pings over `dur` seconds
+  coin_shower: (dur = 1.4) => {
+    const t = ac.currentTime + 0.01; dur = Math.max(0.3, Math.min(3, +dur || 1.4));
+    for (let k = 0; k < 18; k++) { const tb = t + Math.pow(k / 18, 1.2) * dur, f = [1319, 1568, 1760, 2093][k % 4]; layer({ t: tb, dur: 0.25, vol: 0.05, f0: f, a: 0.002, send: 0.5 }); layer({ t: tb, dur: 0.06, vol: 0.02, f0: f * 2.76, a: 0.001, send: 0.4 }); }
+  },
+  // glittering bell glissando (sparkle / level-up)
+  sparkle: () => { const t = ac.currentTime + 0.01; for (let k = 0; k < 9; k++) bellNote(t + k * 0.04, penta(84, k), 0.03 * (1 - k * 0.06), 1.1, 0.9); },
+  // cloth unfurling: soft filtered noise flap
+  unfurl: () => { const t = ac.currentTime + 0.01; layer({ t, dur: 0.5, vol: 0.18, noise: true, ft: "bandpass", ff0: 500, ff1: 2400, q: 0.8, a: 0.05, send: 0.3 }); layer({ t: t + 0.32, dur: 0.12, vol: 0.12, noise: true, ft: "lowpass", ff0: 1500, ff1: 400, a: 0.004, send: 0.2 }); },
+  // wooden sign flip: clack + air
+  flip: () => { const t = ac.currentTime + 0.01; layer({ t, dur: 0.08, vol: 0.3, type: "triangle", f0: 520, f1: 300, a: 0.001, send: 0.3 }); layer({ t: t + 0.18, dur: 0.1, vol: 0.32, type: "triangle", f0: 420, f1: 240, a: 0.001, send: 0.4 }); layer({ t, dur: 0.25, vol: 0.12, noise: true, ft: "bandpass", ff0: 900, ff1: 3000, q: 1, a: 0.04, send: 0.2 }); },
 };
 
 export function sfx(name, arg, cap) {
