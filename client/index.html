@@ -2,13 +2,25 @@
 <html lang="vi">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#070b1a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Chợ Nổi">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="assets/ui/icon-192.png">
+<link rel="apple-touch-icon" href="assets/ui/apple-touch-icon.png">
 <title>Quán Ăn Chợ Nổi</title>
 <style>
   :root { color-scheme: dark; }
-  html, body { margin: 0; height: 100%; background: #070b1a; overflow: hidden; }
-  body { display: flex; align-items: center; justify-content: center; font-family: "Trebuchet MS", system-ui, sans-serif; }
-  #stage { position: relative; width: 100vw; height: 100vh; }
+  html, body { margin: 0; height: 100%; background: #070b1a; overflow: hidden; overscroll-behavior: none; }
+  body { display: flex; align-items: center; justify-content: center; font-family: "Trebuchet MS", system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+  /* engine.fit() sizes #stage to the visual viewport (phones: browser bars / keyboard); 100dvh is the pre-JS fallback */
+  #stage { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100dvh; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
   #px { z-index: 1; background: #070b1a; }
   #ui { z-index: 2; pointer-events: none; }
@@ -24,5 +36,6 @@
   <div id="loading">QUÁN ĂN CHỢ NỔI<small>Đang tải… · nhấn phím bất kỳ để bật âm thanh</small></div>
 </div>
 <script type="module" src="src/main.js"></script>
+<script type="module" src="src/touch.js"></script>
 </body>
 </html>

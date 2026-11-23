@@ -3,6 +3,7 @@ import { highContrast } from "./a11y.js";
 export const W = 480, H = 270;
 
 export const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const coarsePointer = matchMedia("(pointer: coarse)").matches || /[?&]touch=1\b/.test(location.search);
 
 export const screen = {
   S: 1, ox: 0, oy: 0,
@@ -13,17 +14,28 @@ export const screen = {
     this.px = this.pc.getContext("2d");
     this.ui = this.uc.getContext("2d");
     this.px.imageSmoothingEnabled = false;
-    addEventListener("resize", () => this.fit());
+    const refit = () => this.fit();
+    addEventListener("resize", refit);
+    // phones: the visual viewport changes when browser bars slide in/out or the soft keyboard opens; rotation settles late
+    window.visualViewport?.addEventListener("resize", refit);
+    addEventListener("orientationchange", () => { refit(); setTimeout(refit, 250); setTimeout(refit, 700); });
+    document.addEventListener("fullscreenchange", refit);
     this.fit();
   },
   fit() {
     const dpr = devicePixelRatio || 1;
-    const s = Math.min(innerWidth / W, innerHeight / H);
-    const S = s >= 1 ? Math.floor(s * 4) / 4 : s;
+    // fill the *visual* viewport (what is actually visible on a phone), not the layout viewport
+    const vv = window.visualViewport;
+    const vw = Math.round(vv?.width || innerWidth), vh = Math.round(vv?.height || innerHeight);
+    const stage = this.pc.parentElement;
+    if (stage && stage.id === "stage") { stage.style.width = vw + "px"; stage.style.height = vh + "px"; }
+    const s = Math.min(vw / W, vh / H);
+    // desktop: quarter-step scales keep the pixel art even; touch screens use every pixel (no letterbox shrink)
+    const S = s >= 1 && !coarsePointer ? Math.floor(s * 4) / 4 : s;
     const cw = W * S, ch = H * S;
     for (const c of [this.pc, this.uc]) {
       c.style.width = cw + "px"; c.style.height = ch + "px";
-      c.style.left = (innerWidth - cw) / 2 + "px"; c.style.top = (innerHeight - ch) / 2 + "px";
+      c.style.left = (vw - cw) / 2 + "px"; c.style.top = (vh - ch) / 2 + "px";
     }
     this.uc.width = Math.round(cw * dpr); this.uc.height = Math.round(ch * dpr);
     this.S = S * dpr;
