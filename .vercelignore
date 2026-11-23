@@ -1,0 +1,10 @@
+# Vercel serves only the static game: client/ + game.contract.json (read by client/src/main.js as ../game.contract.json)
+docs/
+tests/
+chonoi/
+tools/
+dist/
+.agents/
+.claude/
+*.md
+!client/**

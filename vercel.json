@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": null,
+  "installCommand": null,
+  "outputDirectory": ".",
+  "redirects": [
+    { "source": "/", "destination": "/client/index.html", "permanent": false }
+  ],
+  "headers": [
+    { "source": "/client/src/(.*)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+    { "source": "/game.contract.json", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+  ]
+}
