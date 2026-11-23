@@ -1,6 +1,6 @@
 // Cutscene scripts + the river backdrop they share (side cross-section: sky above, river below, y=0 is the surface).
 import { W, H, clamp, lerp, ease } from "./engine.js";
-import { P, R, bands, sky, sun, cloud, bank, ghe, chibiSide, hyacinth, godRays, kelp, rock, WATER, diver, lantern, fish } from "./art.js";
+import { P, R, bands, sky, sun, cloud, bank, ghe, chibiSide, hyacinth, godRays, kelp, rock, WATER, diver, lantern, fish, KIND_NAME } from "./art.js";
 
 const DEPTH = 420;
 
@@ -94,70 +94,109 @@ export function riverWorld(c, cs, tod = "dawn") {
 }
 
 // ---------- scripts ----------
+// Dave-the-Diver tone: hammy, self-aware, anime parody, deadpan narrator. Meme beats come from meme_fx.js (see its header).
+// Lines auto-advance (Enter / Space jumps ahead); hold Esc skips the opener, any key skips the short dusk / day scenes.
+const SEN = { say: "Út Sen", portrait: "sen", side: "right", color: "#1aa6a0", auto: true, cps: 55 };
+const BA = { say: "Bà Tư", portrait: "ba", color: "#7a4fa0", auto: true, cps: 55 };
+const SKIP_ANY = { opts: { skipAny: true, hint: "Bấm phím bất kỳ để bỏ qua" } };
+
+// Game opener (≈ 24 s): cold open mid-dive → record-scratch freeze-frame → "5 phút trước" → Bà Tư's flame card →
+// Út Sen's sunglasses → ÚT SEN card → sweaty reaction → the dive → "LẶN THÔI!!"
 export function introScript() {
   return [
     { music: "cut_dawn" },
     { bg: (c, cs) => riverWorld(c, cs, "dawn") },
-    { set: { sunUp: 0, jump: 0, splash: 0, ba: true } },
-    { cam: { x: 0, y: -232 }, dur: 0.01 },
-    { fade: "in", dur: 1.4 },
-    { tween: { sunUp: 1 }, dur: 9 },
-    { caption: "Miền Tây Nam Bộ — 5 giờ sáng", sub: "Chợ nổi trên sông, ghe treo cây bẹo rao hàng", dur: 3.2 },
-    { cam: { x: 260, y: -220 }, dur: 4.2, wait: true },
-    { say: "Bà Tư", portrait: "ba", color: "#7a4fa0", text: "Út ơi! Tối nay quán mình mở cửa lại đó nghen." },
-    { say: "Út Sen", portrait: "sen", side: "right", color: "#1aa6a0", text: "Dạ, con nhớ mà nội! Quán Ăn Chợ Nổi tái xuất giang hồ!" },
-    { say: "Bà Tư", portrait: "ba", color: "#7a4fa0", text: "Lặn kiếm cá linh, cá lóc, hái bông súng với bông điên điển về đây. Nhớ canh hơi thở nghe con, hết hơi là phải trồi lên!" },
+    { set: { sunUp: 0.6, jump: 0, splash: 0, ba: true } },
+    { cam: { x: 300, y: -200 }, dur: 0.01 },
+    { fade: "in", dur: 0.5 },
+    // cold open: already mid-air…
+    { musicCue: 2 }, { sfx: "whoosh" }, { stinger: "riser", arg: 0.6 },
+    { tween: { jump: 0.42 }, dur: 0.6, ease: "out", wait: true },
+    // …record scratch, freeze, narrator
+    { meme: "freeze", me: [197, 158], dur: 3 },
+    { set: { jump: 0 } }, { musicCue: 0 }, { cam: { x: 240, y: -222 }, dur: 0.01 },
+    { meme: "impact", text: "◀◀ 5 PHÚT TRƯỚC", vhs: true, col: "#ffffff", size: 34, rot: -0.04, bgCol: "rgba(20,24,60,.72)", dur: 1 },
+    { caption: "Chợ nổi Cái Răng · 5 giờ sáng", sub: "Gà còn chưa gáy, cá lóc đã thức dậy tập thể dục", dur: 1.6 },
+    { cam: { x: 300, y: -200 }, dur: 1.4, ease: "out" },
+    { meme: "kanji", who: "ba", text: "BÀ TƯ", sub: "Bếp trưởng huyền thoại · 40 năm giữ lửa lẩu", bg: "flames", dur: 2.4 },
+    { ...BA, text: "Út ơi! Tối nay quán mở lại. Lặn kiếm cá với bông súng về cho nội!" },
+    { ...SEN, text: "Dạ! Quán Ăn Chợ Nổi tái xuất giang hồ!" },
+    { meme: "shades", who: "sen", text: "ĐỈNH CỦA CHÓP", sub: "(tự tin hơi bị nhiều)", land: 0.8, dur: 2.4 },
     { musicCue: 2 },
-    { intro: { name: "ÚT SEN", sub: "Thợ lặn nhí của chợ nổi · nhịn thở 30 giây", tag: "NHÂN VẬT CHÍNH", portrait: "sen", colA: "#14a6a0", colB: "#ff8a3d", nameCol: "#ffe14d" } },
-    { say: "Út Sen", portrait: "sen", side: "right", color: "#1aa6a0", text: "Hít một hơi thật sâu... Đi nè!" },
-    { cam: { x: 300, y: -200 }, dur: 0.6 },
-    { sfx: "whoosh" }, { stinger: "riser", arg: 0.75 },
-    { tween: { jump: 1 }, dur: 0.75, ease: "inOut", wait: true },
+    { intro: { name: "ÚT SEN", sub: "Thợ lặn nhí · nhịn thở 30 giây · sợ cá trê", tag: "NHÂN VẬT CHÍNH (TỰ PHONG)", portrait: "sen", colA: "#14a6a0", colB: "#ff8a3d", nameCol: "#ffe14d", dur: 2 } },
+    // reaction shot behind Bà Tư's warning
+    { meme: "sweat", who: "sen", dur: 2.9, async: true },
+    { ...BA, text: "Ủa alo? Nhớ canh hơi thở nghen, hết hơi là phải trồi lên!" },
+    { meme: "clear" },
+    // the dive, for real this time
+    { sfx: "whoosh" }, { stinger: "riser", arg: 0.6 },
+    { tween: { jump: 1 }, dur: 0.6, ease: "inOut", wait: true },
     { sfx: "splash" }, { stinger: "splash_big" }, { shake: 5 }, { flash: "#e8fbff" },
     { set: { splash: 1, school: true } },
     { tween: { splash: 0 }, dur: 0.6 },
     { music: "underwater" },
-    { tween: { jump: 2.6 }, dur: 2.4 },
-    { cam: { x: 330, y: 120 }, dur: 2.4, ease: "inOut", wait: true },
-    { title: { text: "BUỔI SÁNG · LẶN", sub: "Gom nguyên liệu, về bến trước khi hết giờ", color: "#7ee8ff" } },
-    { fade: "out", dur: 0.6, wait: true },
+    { tween: { jump: 2.6 }, dur: 1.6 },
+    { cam: { x: 330, y: 120 }, dur: 1.6, ease: "inOut" },
+    { meme: "impact", text: "LẶN THÔI!!", sub: "Buổi sáng · gom nguyên liệu, về bến trước khi hết giờ", col: "#7ee8ff", dur: 1.5 },
+    { fade: "out", dur: 0.5, wait: true },
   ];
 }
 
+// most impressive first: the catch showcase vine-booms the best item in the basket
+const CATCH_RANK = ["ca_loc_kl", "thit_ca_sau", "ca_tra_dau", "ca_loc_bong", "thit_ran", "ca_linh_lon", "ca_loc", "ca_keo", "ca_linh", "keo_neo", "bong_dien_dien", "bong_sung"];
+export function bestCatch(haul = []) {
+  const rank = (k) => { const i = CATCH_RANK.indexOf(k); return i < 0 ? CATCH_RANK.length : i; };
+  let best = null; for (const k of haul) if (best === null || rank(k) < rank(best)) best = k;
+  return best;
+}
+
+// Back at the raft (≈ 7.5 s): boat rows in → catch showcase (vine boom on the best item + verdict) or the empty-basket
+// tragedy (tears + sad trombone) → lanterns pop on → "QUÁN ĂN CHỢ NỔI · MỞ CỬA!"
 export function duskScript(haul = []) {
-  const count = haul.length;
+  const count = haul.length, best = bestCatch(haul), nBest = haul.filter((k) => k === best).length;
+  const show = count ? [
+    { meme: "vineboom", item: best, text: `${KIND_NAME[best] || best}${nBest > 1 ? ` ×${nBest}` : ""}`, dur: 1.1 },
+    count >= 8
+      ? { meme: "impact", text: "ĐẦY GHE!!", sub: `${count} món · mãi đỉnh`, col: "#ffd23f", dur: 1.1 }
+      : { meme: "impact", text: "CŨNG CÓ CÁ…", sub: `${count} món · ét o ét, nhiêu đây đủ hông nội?`, col: "#ffb36b", rot: 0.06, dur: 1.1 },
+    { ...BA, text: count >= 8 ? "Trời đất, xỉu up xỉu down! Lên đèn thôi con!" : "Khum sao, ít mà chất! Lên đèn thôi con!", auto: 0.45, cps: 65 },
+  ] : [
+    { meme: "tears", who: "sen", text: "Giỏ trống…\nCÒN CÁI NỊT", dur: 2 },
+    { ...BA, text: "Ối dồi ôi… thôi khum sao, quán vẫn mở! Lên đèn!", auto: 0.45, cps: 65 },
+  ];
   return [
-    { music: "cut_dusk" },
+    { music: "cut_dusk" }, SKIP_ANY,
     { bg: (c, cs) => riverWorld(c, cs, "dusk") },
-    { set: { raft: true, lights: 0, boatX: 160 } },
-    { cam: { x: 0, y: -230 }, dur: 0.01 },
-    { fade: "in", dur: 1.2 },
-    { caption: "Chiều tà", sub: count ? `Ghe về bến với ${count} món trong giỏ` : "Ghe về bến", dur: 2.6 },
-    { tween: { boatX: 560 }, dur: 4.5 },
-    { cam: { x: 330, y: -225 }, dur: 4.5, wait: true },
-    { say: "Út Sen", portrait: "sen", side: "right", color: "#1aa6a0", text: count >= 8 ? "Nội ơi! Con về rồi! Đầy ghe luôn nè!" : "Nội ơi, con về rồi... hôm nay hơi ít, nội đừng la nha." },
-    { say: "Bà Tư", portrait: "ba", color: "#7a4fa0", text: "Giỏi lắm con. Lên đèn thôi, khách sắp tới rồi!" },
-    { musicCue: 1 }, { stinger: "drumroll", arg: 1.7 },
-    ...Array.from({ length: 8 }, (_, i) => [{ set: { lights: i + 1 } }, { stinger: "bell", arg: i }, { wait: 0.18 }]).flat(),
-    { intro: { name: "BÀ TƯ", sub: "Bếp trưởng huyền thoại · 40 năm giữ lửa lẩu", tag: "BẾP TRƯỞNG", portrait: "ba", colA: "#7a4fa0", colB: "#d94a3d", nameCol: "#ffd23f" } },
-    { sfx: "fanfare" }, { musicCue: 2 }, { stinger: "sting_win", arg: 0.5 },
-    { title: { text: "QUÁN ĂN CHỢ NỔI", sub: "MỞ CỬA! Nấu món, bưng ra bàn, giữ uy tín quán", color: "#ffd23f", band: "rgba(60,14,20,.9)" } },
-    { fade: "out", dur: 0.6, wait: true },
+    { set: { raft: true, lights: 0, boatX: 300 } },
+    { cam: { x: 200, y: -228 }, dur: 0.01 },
+    { fade: "in", dur: 0.4 },
+    { tween: { boatX: 560 }, dur: 1.6, ease: "out" },
+    { cam: { x: 330, y: -225 }, dur: 1.6, ease: "out" },
+    { caption: "Chiều tà · ghe về bến", sub: count ? `${count} món trong giỏ` : "giỏ… nhẹ hều", dur: 1.4 },
+    ...show,
+    { musicCue: 1 }, { stinger: "drumroll", arg: 0.65 },
+    ...Array.from({ length: 8 }, (_, i) => [{ set: { lights: i + 1 } }, { stinger: "bell", arg: i }, { wait: 0.08 }]).flat(),
+    { musicCue: 2 }, { stinger: "sting_win", arg: 0 },
+    { meme: "impact", text: "QUÁN ĂN CHỢ NỔI\nMỞ CỬA!", sub: "Nấu món, bưng ra bàn, giữ uy tín quán", col: "#ffd23f", size: 40, bgCol: "rgba(60,14,20,.7)", dur: 1.4 },
+    { fade: "out", dur: 0.4, wait: true },
   ];
 }
 
-// Short "NGÀY N" card that opens every campaign day (dawn on the market, then straight into the dive).
+// Short "NGÀY N" card (≈ 3.3 s): dawn on the market, impact title, Út Sen chibi-bounces in.
+const DAY_TAG = ["", "Ngày đầu đi làm · run xỉu up xỉu down", "Hôm nay quyết tâm mãi đỉnh", "Giữa mùa nước nổi · cá lóc ét o ét",
+  "Khum lặn là khum có cá", "Trận cuối · all in bông súng"];
+const DAY_CHEER = ["", "Tới công chuyện!", "Đi nè!", "Hehe", "Lặn lẹ!", "Chơi lớn!"];
 export function dayScript(day, sub = "") {
   return [
-    { music: "theme" },
+    { music: "theme" }, SKIP_ANY,
     { bg: (c, cs) => riverWorld(c, cs, "dawn") },
     { set: { sunUp: 0.3, ba: true } },
     { cam: { x: 220, y: -232 }, dur: 0.01 },
-    { fade: "in", dur: 0.7 },
+    { fade: "in", dur: 0.4 },
     { tween: { sunUp: 1 }, dur: 3 },
     { cam: { x: 290, y: -226 }, dur: 3, ease: "out" },
-    { wait: 0.3 },
-    { title: { text: `NGÀY ${day}`, sub, color: "#ffd23f", dur: 2.4 } },
-    { fade: "out", dur: 0.5, wait: true },
+    { meme: "impact", text: `NGÀY ${day}`, sub: sub || DAY_TAG[day] || "Lại một ngày đỉnh của chóp", col: "#ffd23f", size: 52, dur: 1.5 },
+    { meme: "chibi", who: "sen", at: [400, 236], text: DAY_CHEER[day] || "Đi nè!", dur: 0.9 },
+    { fade: "out", dur: 0.4, wait: true },
   ];
 }

@@ -5,8 +5,9 @@
 import { W, H, screen, input, clamp, txt, panel, measure, wrap } from "./engine.js";
 import { sfx, voiceLine } from "./audio.js";
 import { portrait, icon, dishIcon, DISH_NAME, KIND_NAME, premiumBadge } from "./art.js";
-import { menuAll, isPremiumDish } from "./menu.js"; // contract menu + GUI-only Đặc sản dishes
+import { menuKnown, isPremiumDish } from "./menu.js"; // contract menu + the Đặc sản Bà Tư has researched (GUI only)
 import { riverWorld } from "./story.js";
+import { MemeLayer } from "./meme_fx.js"; // meme kit beats on the day card / result / summary (meme_fx.js header = API)
 import * as progress from "./progress.js";
 import { OXY_MUL, DIVE_TIME_S, SERVICE_TIME_S, fmtClock } from "./gui_tuning.js"; // GUI scaling knobs
 import * as board from "./leaderboard.js"; // Phase 4 extension: local top 10 after the last day
@@ -76,21 +77,29 @@ export class DayIntro extends Base {
     const pend = dueOn(progress.save.pendingDelivery, day);
     this.delivery = pend.length ? `Chú Sáu giao tối nay: ${deliveryText(pend)}` : null;
     try { voiceLine("ba", this.line); } catch (e) {}
-    sfx("whoosh");
+    // meme opener: "NGÀY N" impact slam with the day's quip (1.1 s, the plan shows through the dim)
+    this.fx = new MemeLayer();
+    this.fx.start({ meme: "impact", text: `NGÀY ${day}`, sub: DayIntro.QUIP[day] || "Lại một ngày đỉnh của chóp", col: GOLD, size: 56, dur: 1.1 });
   }
+  static QUIP = ["", "Ngày đầu đi làm · run xỉu up xỉu down", "Hôm nay quyết tâm mãi đỉnh", "Giữa mùa nước nổi · cá lóc ét o ét",
+    "Khum lặn là khum có cá", "Trận cuối · all in bông súng"];
   update(dt) {
-    this.tick(dt);
+    this.tick(dt); this.fx.update(dt);
     if (this.t >= this.autoS || (this.t > 0.35 && input.anyKey() && !input.hit("pause") && !input.hit("mute") && !input.hit("captions"))) this.finish();
   }
   draw() {
+    this.drawCard(); this.fx.draw();
+  }
+  drawCard() {
     this.bg(); const u = screen.ui, t = this.t, k = clamp(t / 0.4, 0, 1);
-    txt(`NGÀY ${this.day}`, W / 2, 42, { size: 30 * (1.4 - 0.4 * k), align: "center", color: GOLD, weight: 900, italic: true, stroke: "#3a1410", sw: 6, rot: -0.03 });
+    txt(`NGÀY ${this.day}`, W / 2, 42, { size: 30 * (1.4 - 0.4 * k) * (1 + 0.04 * Math.sin(t * 6)), align: "center", color: GOLD, weight: 900, italic: true, stroke: "#3a1410", sw: 6, rot: -0.03 + 0.02 * Math.sin(t * 3) });
     txt(`Đồ nghề hôm nay: O₂ ${this.st.oxygenMax} s · Máu ${this.st.hpMax} · Lặn ${fmtClock(DIVE_TIME_S)} · Quán ${fmtClock(SERVICE_TIME_S)}`, W / 2, 58, { size: 8, align: "center", color: "#bff3ff", weight: 800, stroke: "#06101e", sw: 2 });
     // Má Tư dialogue box (portrait + typewriter line)
     const bx = 20, by = 66, bw = W - 40, bh = 58;
     panel(bx, by, bw, bh, { fill: "rgba(20,10,24,.9)", border: BORDER, r: 8, bw: 1.5 });
     u.imageSmoothingEnabled = false;
-    try { u.drawImage(portrait("ba"), bx + 6, by + 6, 46, 46); } catch (e) {}
+    const hop = t > 1.1 ? Math.abs(Math.sin((t - 1.1) * 9)) * 5 * Math.exp(-(t - 1.1) * 2.5) : 0; // chibi hop once the slam clears
+    try { u.drawImage(portrait("ba"), bx + 6, by + 6 - hop, 46, 46); } catch (e) {}
     txt("MÁ TƯ", bx + 60, by + 13, { size: 8, color: GOLD, weight: 900 });
     const shown = this.line.slice(0, Math.floor(t * 60));
     wrap(shown, bw - 70, 8).slice(0, 4).forEach((l, i) => txt(l, bx + 60, by + 25 + i * 10, { size: 8, color: "#fff", weight: 700 }));
@@ -121,7 +130,7 @@ export function servings(recipe, stock) { let n = Infinity; for (const [k, q] of
 // when the stock can cook them. The list scrolls (6–7 rows visible) so 12 dishes never overflow the screen.
 export class EveningIntro extends Base {
   constructor(contract, day, stock, onDone, items = null, opts = {}) {
-    super("dusk"); this.onDone = onDone; this.day = day; this.stock = stock || {}; this.menu = menuAll(contract);
+    super("dusk"); this.onDone = onDone; this.day = day; this.stock = stock || {}; this.menu = menuKnown(contract); // locked Đặc sản are hidden until Bà Tư researches them
     this.popup = !!(opts && opts.popup); // pre-open raft: centred board over the live quán instead of a full screen
     this.below = { spoiled_below: 30, ...contract.freshness }.spoiled_below;
     this.items = Array.isArray(items) ? items : null;
@@ -135,6 +144,7 @@ export class EveningIntro extends Base {
     this.plan = planFor(contract, day);
     this.planIds = this.plan ? Object.keys(this.plan.dishes).filter((k) => this.menu[k]) : [];
     let cm = 1; try { cm = progress.stats(contract).cookMul || 1; } catch (e) {}
+    this.contract = contract; this.cm = cm; this.syncT = 0; // syncMenu() re-reads menuKnown (a dish learned from Bà Tư shows at once)
     this.planIds = this.planIds.filter((k) => !isPremiumDish(k)); // Đặc sản are never part of Má Tư's plan
     this.rows = Object.keys(this.menu).map((id) => ({ id, plan: this.planIds.includes(id), on: this.planIds.includes(id), target: 0, can: 0, auto: true, premium: isPremiumDish(id),
       alone: servings(this.menu[id].recipe, this.usable), cook: Math.round(this.menu[id].cook_s * cm * 10) / 10, expect: this.expectPrice(id) }));
@@ -144,6 +154,24 @@ export class EveningIntro extends Base {
     this.recalc();
     this.sel = this.rows.length; // starts on "Mở quán ▶" (Enter opens with Má Tư's plan, as before)
     this.msg = null;
+    // meme opener (full-screen board only; the pre-open pop-up stays quiet): impact title, or a sweaty "kho trống" beat
+    this.fx = new MemeLayer();
+    if (!this.popup) this.fx.start(Object.values(this.usable).some((n) => n > 0)
+      ? { meme: "impact", text: "CHUẨN BỊ MỞ QUÁN", sub: "Chọn món lẹ lên, khách tới rồi!", col: "#ff8a3d", size: 34, dur: 0.9 }
+      : { meme: "sweat", text: "Kho trống trơn… Ủa alo?", dur: 1.4 });
+  }
+  // recipe research: a Đặc sản learned since the board was built joins the rows (on when tonight's stock cooks it)
+  syncMenu() {
+    let known; try { known = menuKnown(this.contract); } catch (e) { return; }
+    const fresh = Object.keys(known).filter((id) => !this.menu[id]);
+    if (!fresh.length) return;
+    this.menu = known;
+    for (const id of fresh) {
+      const alone = servings(known[id].recipe, this.usable);
+      this.rows.push({ id, plan: false, on: alone > 0, target: 0, can: 0, auto: true, premium: isPremiumDish(id), alone, cook: Math.round(known[id].cook_s * this.cm * 10) / 10, expect: this.expectPrice(id) });
+    }
+    if (this.sel >= this.rows.length - fresh.length) this.sel = this.rows.length; // keep "Mở quán / Xong" selected
+    this.recalc();
   }
   get ids() { return this.rows.filter((r) => r.on).map((r) => r.id); }
   // expected price now: freshest usable items of each recipe kind → floor(price × mean fresh / 100) (the quán locks it at cook start)
@@ -166,7 +194,8 @@ export class EveningIntro extends Base {
     }
   }
   update(dt) {
-    this.tick(dt); if (this.msg) { this.msg.life -= dt; if (this.msg.life <= 0) this.msg = null; }
+    this.tick(dt); this.fx.update(dt); if (this.msg) { this.msg.life -= dt; if (this.msg.life <= 0) this.msg = null; }
+    if ((this.syncT += dt) > 0.5) { this.syncT = 0; this.syncMenu(); }
     if (this.t <= 0.6) return;
     const n = this.rows.length + 1;
     if (input.hit("up")) { this.sel = (this.sel + n - 1) % n; sfx("click"); }
@@ -185,12 +214,13 @@ export class EveningIntro extends Base {
   }
   // what the board would open with right now (the pre-open raft reads this when the bell is rung without visiting the board)
   selection() {
+    this.syncMenu();
     const menu = this.ids;
     if (!this.rows.some((r) => r.alone > 0)) return { menu: menu.length ? menu : this.planIds.length ? this.planIds : Object.keys(this.menu), portions: null };
     return { menu, portions: Object.fromEntries(this.rows.filter((r) => r.on).map((r) => [r.id, r.target])) };
   }
   // popup mode (pre-open raft): reopenable — done resets, onDone receives the picks each time it closes
-  reopen() { this.done = false; this.t = 0.6; this.sel = this.rows.length; this.msg = null; }
+  reopen() { this.syncMenu(); this.done = false; this.t = 0.6; this.sel = this.rows.length; this.msg = null; }
   open() {
     const menu = this.ids, anyCook = this.rows.some((r) => r.alone > 0);
     if (!anyCook) { // nothing cookable at all: open anyway with the plan dishes — guests still come, read the board and go home
@@ -221,6 +251,7 @@ export class EveningIntro extends Base {
     this.drawBoard(186, 32, W - 186 - 8, "Mở quán ▶", 7);
     if (this.msg) txt(this.msg.text, W / 2, H - 20, { size: 9, align: "center", color: this.msg.col, weight: 900, stroke: "#1a1220", sw: 2 });
     if (this.t > 0.6) txt("↑↓ chọn món · E/Enter bật/tắt · ←→ số phần · N: mở quán", W / 2, H - 6, { size: 7, align: "center", color: "rgba(255,255,255,.7)", weight: 700 });
+    this.fx.draw();
   }
   // the wooden board (rows, toggles, steppers, button) — shared by the full screen and the popup
   // visible rows (vr) scroll with the selection; the button stays under the window
@@ -286,9 +317,43 @@ export class EveningIntro extends Base {
 // ---------- DayResult: served / left, money, tips, reputation change ----------
 export class DayResult extends Base {
   // opts.under = the finished quán scene: the result is then a centred pop-up over the frozen raft (campaign), not a full screen
-  constructor(sum, onDone, opts = {}) { super("night"); this.s = sum; this.onDone = onDone; this.under = opts.under || null; this.next = opts.next || "Enter: vào Shop ▶"; sfx("fanfare"); }
-  update(dt) { this.tick(dt); if (this.t > 0.8 && (input.hit("confirm") || input.hit("interact") || input.hit("catch"))) this.finish(); }
+  // meme show (≤ 3.1 s, any key cuts it short, a second key continues): money → stonks / "CÒN CÁI NỊT", then the verdict →
+  // great = airhorn "MÃI ĐỈNH", bad = sad trombone + waterfall tears, ok = Bà Tư chibi "Ổn áp!"; the ledger then gets a red stamp
+  constructor(sum, onDone, opts = {}) {
+    super("night"); this.s = sum; this.onDone = onDone; this.under = opts.under || null; this.next = opts.next || "Enter: vào Shop ▶";
+    const earned = sum.earned ?? 0, d = (sum.rep ?? 0) - (sum.rep0 ?? sum.rep ?? 0), served = sum.served ?? 0, left = (sum.left ?? 0) + (sum.missed ?? 0);
+    this.grade = earned <= 0 || d < 0 || left > served ? "bad" : d > 0 && left === 0 && served > 0 ? "great" : "ok";
+    this.stamp = { great: "ĐỈNH CỦA CHÓP", ok: "ỔN ÁP", bad: "TOANG" }[this.grade];
+    this.fx = new MemeLayer(); this.stampT = -1;
+    this.queue = [
+      earned > 0 ? { meme: "stonks", who: "ba", amount: `+${earned}k`, dur: 1.5 } : { meme: "notstonks", who: "sen", amount: "0k", dur: 1.5 },
+      this.grade === "great" ? { meme: "airhorn", text: "MÃI ĐỈNH", sub: `Uy tín +${d.toFixed(1)} · khách khen nức nở`, dur: 1.6 }
+        : this.grade === "bad" ? { meme: "tears", who: "sen", text: left > served ? "Khách bỏ về…\nxỉu up xỉu down" : "Ối dồi ôi…", dur: 1.6 }
+        : { meme: "chibi", who: "ba", at: [W / 2 + 150, H - 20], text: "Ổn áp!", dur: 1.0 },
+    ];
+    this.fx.start(this.queue.shift());
+  }
+  get showing() { return this.fx.active || this.queue.length > 0; }
+  update(dt) {
+    this.tick(dt); this.fx.update(dt);
+    if (!this.fx.active && this.queue.length) this.fx.start(this.queue.shift());
+    if (!this.showing && this.stampT < 0) { this.stampT = 0; sfx("slam"); } else if (this.stampT >= 0) this.stampT += dt;
+    const key = input.hit("confirm") || input.hit("interact") || input.hit("catch");
+    if (key && this.t > 0.3 && this.showing) { this.fx.clear(); this.queue = []; this.t = Math.max(this.t, 0.8); return; } // skip the show, keep the ledger
+    if (this.t > 0.8 && key) this.finish();
+  }
   draw() {
+    this.drawLedger();
+    if (this.stampT >= 0) { // red seal slammed onto the ledger
+      const u = screen.ui, k = clamp(this.stampT / 0.15, 0, 1), sc = 2.2 - 1.2 * k, col = this.grade === "bad" ? "#ff4a4a" : this.grade === "great" ? "#ff3b3b" : "#ff8a3d";
+      const w = measure(this.stamp, 10, 900) + 14, sx = W - 8 - w / 2, sy = 118; // right of the ledger panel, never over a row
+      u.save(); u.translate(sx, sy); u.rotate(-0.22); u.scale(sc, sc); u.globalAlpha = 0.5 + 0.5 * k;
+      u.strokeStyle = col; u.lineWidth = 2.2; u.strokeRect(-w / 2, -10, w, 18); u.lineWidth = 0.8; u.strokeRect(-w / 2 + 3, -7, w - 6, 12); u.restore();
+      txt(this.stamp, sx, sy + 3.5, { size: 10 * sc, align: "center", color: col, weight: 900, rot: -0.22, alpha: 0.5 + 0.5 * k });
+    }
+    this.fx.draw();
+  }
+  drawLedger() {
     if (this.under) { try { this.under.draw(); } catch (e) { this.bg(); } const u = screen.ui, k = clamp(this.t / 0.3, 0, 1); u.save(); u.fillStyle = `rgba(6,8,18,${0.6 * k})`; u.fillRect(0, 0, W, H); u.restore(); }
     else this.bg();
     const s = this.s;
@@ -309,7 +374,7 @@ export class DayResult extends Base {
     ];
     const rh = rows.length > 8 ? 16.5 : 18;
     rows.forEach(([a, b, col], i) => { const y = 66 + i * rh; txt(a, W / 2 - 118, y, { size: 8, color: "rgba(255,255,255,.8)", weight: 700 }); txt(b, W / 2 + 118, y, { size: 9, align: "right", color: col, weight: 900 }); });
-    if (this.t > 0.8) txt(this.next, W / 2, H - 12, { size: 9, align: "center", color: "#fff", weight: 900, alpha: 0.7 + 0.3 * Math.sin(this.t * 5) });
+    if (this.t > 0.8 && !this.showing) txt(this.next, W / 2, H - 12, { size: 9, align: "center", color: "#fff", weight: 900, alpha: 0.7 + 0.3 * Math.sin(this.t * 5) });
   }
 }
 
@@ -471,8 +536,16 @@ export class Summary extends Base {
     this.days = Number.isFinite(contract.tuning.day_plan?.length) ? contract.tuning.day_plan.length : 5;
     this.phase = "stats"; this.name = ""; this.place = -1; this.entries = board.load(); this.pt = 0;
     this._key = (e) => this.onKey(e);
-    sfx("fanfare");
+    // meme finale (any key cuts it short): impact title → the best-selling dish ascends to heaven → airhorns
+    this.fx = new MemeLayer();
+    this.queue = [
+      { meme: "impact", text: "TỔNG KẾT\nMÙA NƯỚC NỔI", sub: `${s.totalEarned}k · ${this.rep.toFixed(1)} ★`, col: GOLD, size: 40, dur: 1.3 },
+      ...(this.bestId ? [{ meme: "ascend", dish: this.bestId, text: `${dishName(this.bestId)}\nMÓN THẦN THÁNH`, dur: 2.2 }] : [{ meme: "sweat", who: "sen", text: "Cả mùa chưa bán được món nào… khum sao", dur: 1.6 }]),
+      { meme: "airhorn", text: "MÃI ĐỈNH", sub: `Tổng điểm ${this.score}`, dur: 1.8 },
+    ];
+    this.fx.start(this.queue.shift());
   }
+  get showing() { return this.fx.active || this.queue.length > 0; }
   onKey(e) {
     if (this.phase !== "name") return;
     if (e.key === "Enter") { e.preventDefault(); this.save(); return; }
@@ -484,18 +557,24 @@ export class Summary extends Base {
     this.entries = r.entries; this.place = r.place; this.phase = "board"; this.pt = 0;
     removeEventListener("keydown", this._key);
     sfx(r.place === 0 ? "fanfare" : "ding", undefined, r.place >= 0 ? `[vào bảng xếp hạng — hạng ${r.place + 1}]` : undefined);
+    this.fx.clear(); this.queue = [r.place === 0 ? { meme: "shades", who: "sen", text: "TOP 1 SERVER", sub: "Đỉnh của chóp · khum ai cản nổi", dur: 2.4 }
+      : r.place > 0 ? { meme: "chibi", who: "sen", at: [W - 60, H - 24], text: `Hạng ${r.place + 1}!`, dur: 1.1 }
+      : { meme: "tears", who: "sen", text: "Chưa vào top…\nlần sau nha!", dur: 2 }];
   }
   finish(arg) { removeEventListener("keydown", this._key); super.finish(arg); }
   get typing() { return this.phase === "name"; }
   update(dt) {
-    this.tick(dt); this.pt += dt;
+    this.tick(dt); this.pt += dt; this.fx.update(dt);
+    if (!this.fx.active && this.queue.length) this.fx.start(this.queue.shift());
     const ok = input.hit("confirm") || input.hit("interact") || input.hit("catch");
+    if (ok && this.phase !== "name" && this.showing && Math.min(this.t, this.pt) > 0.3) { this.fx.clear(); this.queue = []; this.t = Math.max(this.t, 1); return; } // skip the show
     if (this.phase === "stats" && this.t > 1 && ok) {
       if (progress.isDemo()) return this.finish();
       this.phase = "name"; this.pt = 0; sfx("select"); addEventListener("keydown", this._key);
     } else if (this.phase === "board" && this.pt > 0.5 && ok) this.finish();
   }
-  draw() {
+  draw() { this.drawStats(); this.fx.draw(); }
+  drawStats() {
     this.bg();
     if (this.phase === "board") return this.drawBoard();
     const s = progress.save;

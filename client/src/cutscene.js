@@ -4,8 +4,12 @@
 // (paper card + red seal + CTA), { call: fn(cs) }. cam.z now zooms the bg about the screen centre.
 // Cards play "swish" in/out and hero_hit / title_hit on the impact; a "riser" is armed to end on the impact
 // whenever the step before the card has a known length (see armRiser).
+// Meme kit (meme_fx.js header lists every type): { meme: "vineboom" | "freeze" | "shades" | "impact" | ..., ...opts },
+// { msfx: sound }, { opts: { skipAny, hint } } (change options mid-script), say lines with auto: true | s (advance by themselves).
 import { W, H, screen, input, fx, ease, clamp, lerp, txt, wrap, panel, measure, reduceMotion } from "./engine.js";
 import { sfx, music, voice, duck, musicCue } from "./audio.js";
+import { MemeLayer } from "./meme_fx.js";
+import { msfx } from "./meme_sfx.js";
 
 const IMPACT = { intro: 0.3, title: 0.14 }; // seconds into a card where the name slams in
 const RISER = 1.1; // riser length that ends on a card impact
@@ -160,7 +164,11 @@ function drawRewardCard(c, card, k, t) {
   c.restore();
   const a = clamp(inK, 0, 1) * (1 - outK);
   txt(card.label || "PHẦN THƯỞNG", x + 78, y + 22, { size: 8, color: "#b5462e", weight: 900, alpha: a });
-  txt(card.name || "", x + 78, y + 42, { size: 13, color: "#2a1a12", weight: 900, alpha: a });
+  // name: shrink to fit (13 → 9 px), then wrap to 2 lines at 9 px for very long dish names
+  const name = card.name || "", nameW = w - 90; let ns = 13;
+  while (ns > 9 && measure(name, ns, 900) > nameW) ns -= 0.5;
+  const nl = measure(name, ns, 900) > nameW ? wrap(name, nameW, ns).slice(0, 2) : [name];
+  nl.forEach((l, i) => txt(l, x + 78, y + (nl.length > 1 ? 36 : 42) + i * (ns + 1), { size: ns, color: "#2a1a12", weight: 900, alpha: a }));
   wrap(card.sub || "", w - 92, 8).slice(0, 2).forEach((l, i) => txt(l, x + 78, y + 58 + i * 10, { size: 8, color: "#5a3a20", weight: 800, alpha: a }));
   if (card.cta) {
     const bw = measure(card.cta, 9, 900) + 20, bx = x + w - bw - 12, by = y + h - 28, pulse = 1 + Math.sin(t * 6) * 0.04;
@@ -256,6 +264,7 @@ export class Cutscene {
     this.bg = null; this.tweens = []; this.cur = null; this.curT = 0;
     this.bars = 0; this.fade = { a: 1, to: 1, col: "#000", spd: 2 }; this.skipHold = 0; this.done = false;
     this.say = null; this.caption = null; this.card = null;
+    this.o = { ...opts }; this.memes = new MemeLayer(this); this.lastWho = "sen";
     if (opts.overlay) { this.fade.a = 0; this.fade.to = 0; }
     this.advance();
   }
@@ -269,7 +278,7 @@ export class Cutscene {
       const s = this.steps[j];
       if (s.intro) return IMPACT.intro;
       if (s.title) return IMPACT.title;
-      if (s.caption || s.say || s.wait !== undefined) return null;
+      if (s.caption || s.say || s.wait !== undefined || (s.meme && s.meme !== "clear" && !s.async && s.hold !== 0)) return null;
     }
     return null;
   }
@@ -292,6 +301,10 @@ export class Cutscene {
     this.cur = null; this.curT = 0; this.riser = null;
     while (this.i < this.steps.length) {
       const s = this.steps[this.i++];
+      // meme kit (meme_fx.js): blocks for its hold (default = its dur) unless async / hold: 0
+      if (s.meme) { const hold = this.memes.start(s); if (hold > 0) { this.cur = { wait: hold }; return; } continue; }
+      if (s.msfx) { msfx(s.msfx, s); continue; }
+      if (s.opts) { Object.assign(this.o, s.opts); continue; }
       if (s.bg) { this.bg = s.bg; continue; }
       if (s.music !== undefined) { music(s.music); continue; }
       if (s.sfx) { sfx(s.sfx); continue; }
@@ -310,7 +323,7 @@ export class Cutscene {
       if (s.cam) { this.tween(this.cam, s.cam, s.dur, s.ease ? ease[s.ease] : ease.inOut); if (s.wait) { this.cur = { wait: s.dur }; return this.armRiser(s.dur); } continue; }
       if (s.tween) { this.tween(this.v, s.tween, s.dur, s.ease ? ease[s.ease] : ease.inOut); if (s.wait) { this.cur = { wait: s.dur }; return this.armRiser(s.dur); } continue; }
       if (s.caption) { this.caption = { ...s, k: 0 }; this.cur = s; return this.armRiser(s.dur || 2.6); }
-      if (s.say) { this.say = { ...s, k: 0, shown: 0 }; this.cur = s; return; }
+      if (s.say) { this.say = { ...s, k: 0, shown: 0, held: 0 }; this.cur = s; if (s.portrait) this.lastWho = s.portrait; return; }
       if (s.intro) { this.cur = s; return this.startCard("intro", s.intro); }
       if (s.title) { this.cur = s; return this.startCard("title", s.title); }
       if (s.wait !== undefined) { this.cur = s; return this.armRiser(s.wait); }
@@ -328,12 +341,15 @@ export class Cutscene {
       for (const key in tw.to) tw.obj[key] = lerp(tw.from[key], tw.to[key], k);
     }
     this.tweens = this.tweens.filter((tw) => tw.t < tw.dur);
-    if (this.o.skipAny && this.t > 0.3 && (input.anyKey?.() || input.hit("back") || input.hit("confirm"))) {
+    this.memes.update(dt);
+    // any key skips (M / U / H toggles excluded so muting or captions never skip a scene)
+    const toggle = input.hit("mute") || input.hit("captions") || input.hit("contrast");
+    if (this.o.skipAny && this.t > 0.3 && !toggle && (input.anyKey?.() || input.hit("back") || input.hit("confirm"))) {
       sfx("click");
       // skipping still shows the reward card briefly (so the player sees what they got); a second press ends it
       const ri = this.steps.findIndex((st, j) => j >= this.i && st.reward);
       if (!this.skipped && ri >= 0 && this.card?.type !== "reward") {
-        this.skipped = true; this.tweens = []; this.cam = { x: 0, y: 0, z: 1 }; this.card = null; this.say = null; this.caption = null;
+        this.skipped = true; this.tweens = []; this.cam = { x: 0, y: 0, z: 1 }; this.card = null; this.say = null; this.caption = null; this.memes.clear();
         for (let j = this.i; j < ri; j++) { const st = this.steps[j]; if (st.set) Object.assign(this.v, st.set); if (st.aura !== undefined) this.aura = st.aura ? { kind: st.aura, col: st.col } : null; if (st.tween) Object.assign(this.v, st.tween); }
         this.steps = [...this.steps.slice(0, ri), { reward: { ...this.steps[ri].reward, dur: 0.9 } }]; this.i = ri; this.advance(); return;
       }
@@ -353,12 +369,14 @@ export class Cutscene {
     if (s.say) {
       const d = this.say;
       const before = Math.floor(d.shown);
-      d.shown = Math.min(d.text.length, d.shown + dt * 42);
+      d.shown = Math.min(d.text.length, d.shown + dt * (s.cps || 42));
       for (let k = before; k < Math.floor(d.shown); k++) voice(d.say, d.text[k], d.text, k); // babble (skips spaces/punct itself)
       if (input.hit("confirm") || input.hit("catch") || input.hit("interact")) {
         if (d.shown < d.text.length) d.shown = d.text.length;
         else { sfx("click"); this.say = null; return this.advance(); }
       }
+      // auto: true (reading time from the length) or seconds to hold after the line is fully shown
+      if (s.auto && d.shown >= d.text.length) { d.held += dt; if (d.held >= (s.auto === true ? 0.55 + d.text.length * 0.022 : s.auto)) { this.say = null; return this.advance(); } }
     }
     if (this.card && this.card.type === "reward") {
       const c = this.card; c.k = this.curT;
@@ -383,6 +401,7 @@ export class Cutscene {
     if (this.bg) this.bg(c, this);
     if (panned) c.restore();
     if (this.card) (this.card.type === "intro" ? drawIntroCard : this.card.type === "reward" ? drawRewardCard : drawTitleCard)(c, this.card, this.card.k, this.t);
+    this.memes.draw(); // meme kit: UI layer, above bg + cards, below caption / dialogue / fade
     // letterbox
     const bh = Math.round((this.o.bars ?? 22) * ease.out(this.bars));
     c.fillStyle = "#000"; c.fillRect(0, 0, W, bh); c.fillRect(0, H - bh, W, bh);

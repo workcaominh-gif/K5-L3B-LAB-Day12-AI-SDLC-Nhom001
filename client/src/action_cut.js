@@ -1,23 +1,25 @@
-// Action cutscenes (GUI only, "Sáng tạo của nhóm"): short (2.5–6 s), skippable mini-scenes that celebrate a player action —
-// hiring / training staff, buying décor, buying gear, claiming a chore reward. They play as an overlay on top of whatever
-// is on screen (the scene behind stays frozen because the overlay that triggered them is open), queue when several fire,
-// and follow docs/design/cutscene-study.md §3: a hold beat before the payoff, zoom punch + flash at the payoff, a backdrop
-// swap for reactions, and every scene ends on a reward token (paper card + red seal + "use it now" button). The first
-// play of each kind is the FULL version; repeats play a 2-beat SHORT version. Skipping still flashes the reward card.
+// Action cutscenes (GUI only, "Sáng tạo của nhóm"): skippable, over-the-top meme sketches in the Dave-the-Diver spirit
+// (hammy, anime parody, self-aware) that celebrate a player action — hiring / training staff, buying décor, buying gear,
+// claiming a chore reward, Bà Tư learning a new dish. Built from the meme kit (meme_fx.js: slowmo, vineboom, kanji, shades,
+// freeze, airhorn, stonks, tears, ascend, saltbae, …). They play as an overlay on top of whatever is on screen (the scene
+// behind stays frozen because the overlay that triggered them is open), queue when several fire, and every scene ends on a
+// reward token (paper card + red seal + "use it now" button). The first play of each kind is the FULL sketch (5–8 s);
+// repeats play a SHORT version (2.5–3.5 s) with the single funniest beat. Skipping still flashes the reward card.
 //
 // API
 //   playAction(kind, data)   queue a cut: "hire" {id} · "train" {id} · "decor" {slot, from, to} · "gear" {name, stat, glyph, cta}
-//                            · "chore" {title, money, rep}. Returns false when cuts are switched off.
+//                            · "chore" {title, money, rep} · "research" {id, name, price, recipe, cook_s}. Returns false when
+//                            cuts are switched off.
 //   pumpActionCut(dt[, host]) call at the top of an overlay's update(); true = a cut consumed this frame (skip your own input)
 //   drawActionCut()          call at the end of an overlay's draw()
 //   actionCutActive()        a cut is playing or queued
 //   cutsEnabled() / setCutsEnabled(on) / toggleCuts()   "Cảnh cắt ngắn: Bật/Tắt" (localStorage "chonoi.actionCuts")
 //   drawRaftThumb(u, x, y, w, h)  live mini raft (preview-aware décor) for places where the real raft is not visible
 // Hosts wired here: Bà Tư's dialog (batu.js), the phone (phone.js), Chợ Chú Sáu pop-up (shop_popup.js).
-import { W, H, screen, clamp, lerp, ease, txt, panel } from "./engine.js";
+import { W, H, screen, clamp, lerp, ease, txt, panel, measure, reduceMotion } from "./engine.js";
 import { Cutscene, slamText, speedLines, halftone, confetti, sparkles, coinRain, comicSplit, bubble, drawAura } from "./cutscene.js";
 import { sfx, voiceLine } from "./audio.js";
-import { portrait, P, R, lantern } from "./art.js";
+import { portrait, P, R, lantern, icon, dishIcon, KIND_NAME } from "./art.js";
 import { decorFx, raftSeen, raftLive, roofAndPosts, backRail, deck, quanSign, flowerGarland, sideTable, stool, flowerPot,
   flowerArch, landing, lanternString, glow, personSide, LANTERN_SETS } from "./raft.js";
 import * as meta from "./meta.js";
@@ -46,6 +48,7 @@ export function playAction(kind, data = {}) {
 const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 export const actionCutActive = () => !!cur || queue.length > 0;
 export const actionCutKind = () => cur?.kind || null;
+export const actionCutScene = () => cur?.cs || null; // tests / debug: the playing Cutscene (card, memes, steps)
 // host = "main" marks a top-level host (main.js hook) so gameplay events (e.g. chore done mid-dive) may queue cuts too
 export function pumpActionCut(dt, host) {
   if (host === "main") mainHosted = true;
@@ -72,7 +75,8 @@ export function drawActionCut() {
 }
 export const hostedByMain = () => mainHosted;
 function startCut(q) {
-  const full = firstTime(q.kind + ":" + (q.data.id || q.data.slot || ""));
+  // research: one "seen" flag for the whole kind (every dish is learned once, so a per-dish key would always play FULL)
+  const full = firstTime(q.kind + ":" + (q.kind === "research" ? "" : (q.data.id || q.data.slot || "")));
   const def = BUILD[q.kind](q.data, full);
   const c = { kind: q.kind, data: q.data, def, full };
   c.cs = new Cutscene(def.steps, null, OPTS);
@@ -162,7 +166,7 @@ const STAFF_LOOK = {
   waiter: { shirt: "#e84a5a", pants: "#2a3a5a", hair: "#1a1218", cap: "#2a8f5a" },
   cook: { shirt: "#f2efe6", pants: "#3a3a44", hair: "#2a1d2b", band: P.red, mustache: true, towel: "#9fd8ff" },
 };
-function chibiBig(c, id, x, y, s, t, o = {}) { c.save(); c.translate(Math.round(x), Math.round(y)); c.scale(s, s); personSide(c, 0, 0, { face: o.face ?? 1, ...STAFF_LOOK[id], arm: o.arm, t, walk: o.walk || 0 }); c.restore(); }
+function chibiBig(c, id, x, y, s, t, o = {}) { c.save(); c.translate(Math.round(x), Math.round(y)); c.scale(s, s); personSide(c, 0, 0, { face: o.face ?? 1, ...STAFF_LOOK[id], arm: o.arm, carry: o.carry, t, walk: o.walk || 0 }); c.restore(); }
 function portraitAt(c, key, x, y, S) { const img = portrait(key); c.save(); c.imageSmoothingEnabled = false; c.drawImage(img, Math.round(x), Math.round(y), img.width * S, img.height * S); c.restore(); return img; }
 const decorIcon = (slot, id) => (c, x, y, s) => {
   s = slot === "sign" ? 0.5 : slot === "cloth" ? 1.6 : s;
@@ -175,64 +179,89 @@ const decorIcon = (slot, id) => (c, x, y, s) => {
 };
 
 // ---------------- the cuts ----------------
-const ROLE = { waiter: { name: "BÉ TÍ", sub: "Chạy bàn mới!", colA: "#2f8f5b", colB: "#ffcf4a", line: "Dạ con chạy bàn lẹ lắm, bưng năm tô hổng đổ một giọt!" },
-  cook: { name: "CHÚ BẢY", sub: "Phụ bếp mới!", colA: "#a33a2a", colB: "#f3d27a", line: "Bếp để Bảy lo, lửa lớn tay nhanh nghen con." } };
+// Dave-the-Diver tone: every FULL cut (first time, 5–8 s) is a little hammy meme sketch built from the meme kit
+// (meme_fx.js header); the SHORT repeat (2.5–3.5 s) keeps the single funniest beat. Every cut ends on the reward card.
+const ROLE = { waiter: { name: "BÉ TÍ", colA: "#2f8f5b", line: "Dạ con chạy bàn lẹ lắm, bưng năm tô hổng đổ một giọt!" },
+  cook: { name: "CHÚ BẢY", colA: "#a33a2a", line: "Bếp để Bảy lo, lửa lớn tay nhanh nghen con." } };
+// a staff sprite as a meme subject: side-view personSide, ~24 px tall; eye anchors so shades / star eyes land on the head
+const STAFF_FACE = { eyes: [[10, 6.5], [15, 6.5]], mouth: [15, 9.5] };
+const staffSubj = (id, o = {}) => ({ art: (g, k) => personSide(g, 0, 0, { face: 1, ...STAFF_LOOK[id], t: k, arm: o.arm, carry: o.carry, walk: o.walk ? k + 0.01 : 0 }), face: STAFF_FACE });
+const DARK = (col = "#14101c") => (c) => { c.fillStyle = col; c.fillRect(0, 0, W, H); };
+// split a long name into two balanced lines (for the brush-word kanji card)
+function twoLines(s) {
+  const w = s.split(" "); if (s.length <= 10 || w.length < 2) return s;
+  let best = 1, bd = 1e9;
+  for (let i = 1; i < w.length; i++) { const d = Math.abs(w.slice(0, i).join(" ").length - w.slice(i).join(" ").length); if (d < bd) { bd = d; best = i; } }
+  return w.slice(0, best).join(" ") + "\n" + w.slice(best).join(" ");
+}
+const upper = (s) => { try { return s.toLocaleUpperCase("vi"); } catch (e) { return s.toUpperCase(); } };
+const END = (reward) => [{ meme: "clear" }, { reward }];
+
 const BUILD = {
-  // S1 — hiring: the new hand hops aboard (punch on landing) · hold · name-slam card · comic split with Bà Tư approving · token
+  // hire — full: slow-mo walk away from an explosion · Bà Tư vine-boom squint "Ủa alo?" · flaming brush-word name card ·
+  // shades drop "ĐỈNH CỦA CHÓP" · reward. Short: name card · reward.
   hire(d, full) {
     const id = d.id === "cook" ? "cook" : "waiter", R0 = ROLE[id], S = meta.STAFF[id], L = S.levels[1];
-    const card = { name: R0.name, sub: R0.sub, tag: "★ NHÂN VIÊN MỚI", colA: R0.colA, colB: R0.colB, nameCol: "#fff", dur: full ? 2.2 : 1.8,
-      art: (c, x, k, t) => { c.save(); c.globalAlpha = 0.35; chibiBig(c, id, x + 70, H + 4, 7, t); c.restore(); chibiBig(c, id, x + 62, H - 4, 7, t, { arm: "wave" }); } };
-    const reward = { icon: (c, x, y, s) => chibiBig(c, id, x + 14, y + 32, 1.6, 0), label: "NHÂN VIÊN MỚI", name: `${S.short} · ${S.role}`, sub: `Công ${L.wage}k/ngày · ${L.desc}`, cta: "Vô làm!", seal: "NHẬN", dur: 1.4 };
-    const split = (c, cs) => comicSplit(c, clamp((cs.t - (cs.v.splitAt ?? 99)) / 0.3, 0, 1), "#ffcf8a", R0.colA,
-      (cc, b) => { portraitAt(cc, "ba", b.x + 30, b.y + b.h - 100, 5); bubble(cc, b.x + 120, b.y + 50, "Được! Mai đi làm sớm nghen.", { maxW: 110, size: 8.5 }); },
-      (cc, b) => { chibiBig(cc, id, b.x + b.w - 70, b.y + b.h - 4, 5, cs.t, { face: -1, arm: "wave" }); bubble(cc, b.x + b.w - 90, b.y + 46, R0.line, { maxW: 120, size: 8, tail: "right" }); }, cs.t);
-    const bg = (c, cs) => {
-      const v = cs.v;
-      if (v.splitAt != null) { c.fillStyle = "#14101c"; c.fillRect(0, 0, W, H); return split(c, cs); }
-      raftView(c, cs.t, 380, 190, 1.6);
-      const hk = clamp(v.hop || 0, 0, 1), hx = lerp(W + 30, W * 0.62, hk), hy = H - 40 - Math.sin(hk * Math.PI) * 60;
-      chibiBig(c, id, hx, hy, 3, cs.t, { face: -1, walk: hk < 1 ? cs.t : 0 });
-      if (v.bang) txt("!", hx, hy - 90, { size: 26, align: "center", color: "#ffd23f", weight: 900, stroke: "#1a1220", sw: 4 });
-    };
+    const reward = { icon: (c, x, y) => chibiBig(c, id, x + 14, y + 32, 1.6, 0), label: "NHÂN VIÊN MỚI", name: `${S.short} · ${S.role}`, sub: `Công ${L.wage}k/ngày · ${L.desc}`, cta: "Vô làm!", seal: "NHẬN", dur: 1.3 };
+    const kanji = (dur) => ({ meme: "kanji", ...staffSubj(id, { arm: "wave" }), text: R0.name, sub: `${S.role} · công ${L.wage}k/ngày`, bg: "flames", col: "#160606", dur });
     const steps = full ? [
-      { duck: 5.5, amt: 0.4 }, { bg }, { set: { hop: 0 } }, { sfx: "splash" },
-      { tween: { hop: 1 }, dur: 0.6, ease: "out", wait: true }, { punch: 1.3 }, { shake: 2 },
-      { set: { bang: 1 } }, { wait: 0.45 },                                                     // hold beat before the payoff
-      { intro: card },
-      { call: (cs) => { cs.v.splitAt = cs.t; voiceLine("Bà Tư", "Được! Mai đi làm sớm nghen."); } }, { stinger: "sting_win" }, { stinger: "jingle", arg: "hire" },
-      { wait: 1.2 },
-      { reward },
-    ] : [{ duck: 3, amt: 0.4 }, { bg: (c) => { c.fillStyle = "#14101c"; c.fillRect(0, 0, W, H); } }, { intro: card }, { stinger: "jingle", arg: "hire" }, { reward: { ...reward, dur: 1.1 } }];
+      { duck: 7.5, amt: 0.4 }, { bg: DARK() },
+      { meme: "slowmo", ...staffSubj(id, { walk: true }), shades: false, text: `${S.short} tới nhận việc. Người ngầu không ngoái lại.`, dur: 1.6 },
+      { call: () => voiceLine("Bà Tư", "Ủa alo? Ai đây?") },
+      { meme: "vineboom", who: "ba", text: "Ủa alo? Ai đây?", dur: 1.0 },
+      kanji(1.6),
+      { meme: "shades", ...staffSubj(id, { arm: "wave" }), text: "ĐỈNH CỦA CHÓP", sub: `"${R0.line}"`, land: 0.7, dur: 1.8 },
+      { stinger: "jingle", arg: "hire" },
+      ...END(reward),
+    ] : [
+      { duck: 3, amt: 0.4 }, { bg: DARK() }, kanji(1.6), { stinger: "jingle", arg: "hire" }, ...END({ ...reward, dur: 1.1 }),
+    ];
     return { steps };
   },
-  // training to level 2: glow-up with a riser, punch, gold rays, "★★ LÊN NGHỀ!" band, sparkles, token
+  // train — full: anime training montage (speed lines, rep counter, sweat flying) · sweat "Ét o ét…" · impact "LÊN TRÌNH!!" ·
+  // ascend with choir + star eyes · reward. Short: ascend · reward.
   train(d, full) {
     const id = d.id === "cook" ? "cook" : "waiter", S = meta.STAFF[id], L = S.levels[2];
+    const DRILLS = id === "cook"
+      ? [["THÁI 100 CỌNG SẢ", { arm: "stir" }], ["QUẠT LÒ 100 LẦN", { arm: "wave" }], ["NÊM 100 NỒI LẨU", { arm: "stir" }], ["BƯNG 100 TÔ", { carry: true }]]
+      : [["BƯNG 100 TÔ", { carry: true }], ["CHẠY 100 VÒNG GHE", { walk: true }], ["LAU 100 CÁI BÀN", { arm: "stir" }], ["CƯỜI 100 LẦN", { arm: "wave" }]];
     const bg = (c, cs) => {
-      const g = clamp(cs.v.glow || 0, 0, 1);
-      if (!cs.aura) { c.fillStyle = "#1a1030"; c.fillRect(0, 0, W, H); halftone(c, 0, 0, W, H, "rgba(255,210,63,.08)", 8); }
-      c.save(); c.globalCompositeOperation = "lighter"; c.fillStyle = `rgba(255,220,120,${0.25 * g})`; c.beginPath(); c.arc(W / 2, H / 2 + 20, 60 + g * 30, 0, Math.PI * 2); c.fill(); c.restore();
-      chibiBig(c, id, W / 2, H / 2 + 70, 5 + g, cs.t, { arm: g >= 1 ? "wave" : null });
-      sparkles(c, W / 2, H / 2, cs.t, 14 + Math.round(g * 10), 120);
+      const t = cs.t, m = clamp(cs.v.mont || 0, 0, 0.999), rt = reduceMotion ? 0 : t, i = Math.floor(m * DRILLS.length), [label, o] = DRILLS[i];
+      c.fillStyle = i % 2 ? "#2a1040" : "#401a10"; c.fillRect(0, 0, W, H);
+      speedLines(c, W / 2, H / 2 + 20, rt * 3, "rgba(255,210,63,.2)", 30); halftone(c, 0, 0, W, H, "rgba(255,255,255,.05)", 8, false);
+      const bob = reduceMotion ? 0 : Math.abs(Math.sin(t * 14)) * 4;
+      chibiBig(c, id, W / 2, H - 24 - bob, 6, rt, { ...o, walk: o.walk ? rt + 0.01 : 0 });
+      if (!reduceMotion) for (let k = 0; k < 6; k++) { // sweat flying off the head
+        const ph = (t * 2.2 + k / 6) % 1, sx = W / 2 + (k % 2 ? 1 : -1) * (20 + ph * 70), sy = H - 150 - Math.sin(ph * Math.PI) * 40 + ph * 60;
+        c.fillStyle = "#9fe4ff"; c.fillRect(Math.round(sx), Math.round(sy), 4, 5); c.fillStyle = "#fff"; c.fillRect(Math.round(sx) + 1, Math.round(sy) + 1, 1, 2);
+      }
+      const within = (m * DRILLS.length) % 1, reps = Math.max(1, Math.round(within * within * 100));
+      slamText(label, W / 2, 50, 24, { color: "#ffd23f", rot: -0.05 });
+      txt(`×${reps}`, W - 40, H - 40, { size: 30, align: "right", color: "#fff", weight: 900, italic: true, stroke: "#1a1220", sw: 6 });
+      txt("● REC  MONTAGE LUYỆN CÔNG", 22, 30, { size: 8, color: Math.floor(t * 2) % 2 && !reduceMotion ? "#ff4a4a" : "#ff9a9a", weight: 900 });
     };
-    const reward = { icon: (c, x, y) => chibiBig(c, id, x + 14, y + 32, 1.6, 0), label: "LÊN BẬC 2", name: `${S.short} ★★`, sub: `${L.desc} · công ${L.wage}k/ngày`, cta: "Làm tiếp", seal: "GIỎI", dur: 1.3 };
-    const title = { text: "★★ LÊN NGHỀ!", sub: `${S.short} · ${L.desc}`, color: "#ffd23f", dur: full ? 1.7 : 1.4 };
+    const reward = { icon: (c, x, y) => chibiBig(c, id, x + 14, y + 32, 1.6, 0), label: "LÊN BẬC 2", name: `${S.short} ★★`, sub: `${L.desc} · công ${L.wage}k/ngày`, cta: "Làm tiếp", seal: "GIỎI", dur: 1.2 };
+    const ascend = (dur) => ({ meme: "ascend", ...staffSubj(id, { arm: "wave" }), stars: true, text: `★★ ${upper(S.short)} LÊN BẬC 2`, dur });
     const steps = full ? [
-      { duck: 4.5, amt: 0.4 }, { bg }, { set: { glow: 0 } }, { stinger: "riser", arg: 1.2 },
-      { tween: { glow: 1 }, dur: 0.8, wait: true },
-      { wait: 0.3 }, { aura: "rays", col: "#e0a020" }, { punch: 1.25 }, { stinger: "sparkle" },
-      { title }, { stinger: "jingle", arg: "level" },
-      { reward },
-    ] : [{ duck: 3, amt: 0.4 }, { bg }, { set: { glow: 1 } }, { aura: "rays", col: "#e0a020" }, { title }, { stinger: "sparkle" }, { reward: { ...reward, dur: 1.1 } }];
+      { duck: 7, amt: 0.4 }, { bg }, { set: { mont: 0 } }, { stinger: "riser", arg: 1.6 }, { msfx: "whoosh_hit" },
+      { tween: { mont: 1 }, dur: 1.6, wait: true },
+      { meme: "sweat", ...staffSubj(id), text: "Ét o ét…", dur: 1.0 },
+      { meme: "impact", text: "LÊN TRÌNH!!", sub: `${S.short} · ${L.desc}`, col: "#ffd23f", dur: 1.0 },
+      ascend(1.7), { stinger: "jingle", arg: "level" },
+      ...END(reward),
+    ] : [
+      { duck: 3, amt: 0.4 }, { bg: DARK("#1a1030") }, ascend(1.6), { stinger: "jingle", arg: "level" }, ...END({ ...reward, dur: 1.1 }),
+    ];
     return { steps };
   },
-  // S2 — décor: push in on the raft, the new piece appears (lanterns light one by one with bells, cloths unfurl, flowers
-  // bloom, the sign flips) while the camera pans, a short still, then a wide reveal + "Quán đẹp hẳn ra!" + token
+  // décor — full: camera pushes in while the new piece appears (lanterns light one by one with bells, cloths unfurl, flowers
+  // bloom, the sign flips) · record scratch freeze-frame "Ừ, cái đó là tui mua đó…" · wide shot + airhorn "QUÁN XỊN XÒ" · reward.
+  // Short: quick reveal · airhorn · reward.
   decor(d, full) {
     const slot = meta.DECOR[d.slot] ? d.slot : "lanterns", it = meta.decorItem(slot, d.to) || meta.DECOR[slot].items[0];
     const anim = { slot, from: d.from ?? meta.DECOR[slot].def, to: it.id, k: 0, revealX: -1e9 };
     const CAM = { lanterns: [[96, 40, 2.4], [384, 40, 2.4]], cloth: [[180, 200, 1.7], [330, 200, 1.7]], flowers: [[200, 205, 1.5], [420, 195, 1.8]], sign: [[80, 100, 2.8], [80, 100, 2.8]] }[slot];
+    const NOUN = { lanterns: "dàn đèn", cloth: "bộ khăn bàn", flowers: "mấy chậu bông", sign: "cái bảng hiệu" }[slot];
     const xs = LANTERN_XS; let bell = 0, fxDone = false;
     const tick = (cs) => {
       const k = clamp(cs.v.ak || 0, 0, 1); anim.k = k;
@@ -241,35 +270,28 @@ const BUILD = {
         while (bell < xs.length && xs[bell] <= anim.revealX) { sfx("bell" + Math.min(14, bell)); bell++; }
       } else if (!fxDone && k > 0.02) { fxDone = true; sfx(slot === "cloth" ? "unfurl" : slot === "sign" ? "flip" : "sparkle"); }
     };
-    const bg = (c, cs) => {
-      const v = cs.v; raftView(c, cs.t, v.fx, v.fy, v.zz);
-      if (v.slam != null) {
-        const k = clamp((cs.t - v.slam) / 0.25, 0, 1);
-        sparkles(c, W / 2, H / 2 - 20, cs.t, 18, 200);
-        slamText("Quán đẹp hẳn ra!", W / 2, H * 0.42, 26, { scale: lerp(2.2, 1, ease.out(k)), color: "#ffd23f", alpha: k });
-      }
-    };
+    const bg = (c, cs) => { const v = cs.v; raftView(c, cs.t, v.fx, v.fy, v.zz); };
     const pct = Math.round((meta.decorBonus() - 1) * 100);
-    const reward = { icon: decorIcon(slot, it.id), label: "TRANG TRÍ MỚI", name: it.name, sub: `Khách kiên nhẫn hơn +${pct}%`, cta: "Xem quán", seal: "ĐẸP", dur: 1.5 };
+    const reward = { icon: decorIcon(slot, it.id), label: "TRANG TRÍ MỚI", name: it.name, sub: `Khách kiên nhẫn hơn +${pct}%`, cta: "Xem quán", seal: "ĐẸP", dur: 1.3 };
+    const horn = (dur) => ({ meme: "airhorn", text: "QUÁN XỊN XÒ", sub: `${it.name} · khách kiên nhẫn hơn +${pct}%`, dur });
     const [a, b] = CAM;
     const steps = full ? [
-      { duck: 5, amt: 0.4 }, { call: () => meta.setDecorAnim(anim) }, { bg }, { set: { fx: W / 2, fy: H / 2, zz: 1, ak: 0 } },
-      { tween: { fx: a[0], fy: a[1], zz: a[2] }, dur: 0.5, wait: true },
-      { tween: { ak: 1, fx: b[0], fy: b[1], zz: b[2] }, dur: 1.4, ease: "inOut", wait: true },
-      { wait: 0.4 },                                                                            // still beat before the payoff
-      { tween: { fx: W / 2, fy: H / 2, zz: 1 }, dur: 0.3, ease: "out", wait: true },
-      { punch: 1.12, sound: false }, { flash: "#ffe9b0", t: 0.15 }, { stinger: "sting_win" }, { stinger: "jingle", arg: "warm" },
-      { call: (cs) => { cs.v.slam = cs.t; } }, { wait: 1.0 },
-      { reward },
+      { duck: 7, amt: 0.4 }, { call: () => meta.setDecorAnim(anim) }, { bg }, { set: { fx: W / 2, fy: H / 2, zz: 1, ak: 0 } },
+      { tween: { fx: a[0], fy: a[1], zz: a[2] }, dur: 0.35, wait: true },
+      { tween: { ak: 1, fx: b[0], fy: b[1], zz: b[2] }, dur: 1.2, ease: "inOut", wait: true },
+      { meme: "freeze", me: [W / 2, H / 2], meLabel: "đồ mới nè", name: "ÚT SEN (kể)", text: `Ừ, ${NOUN} đó là tui mua đó. Đẹp hông? Còn ví tui thì… khum đẹp lắm.`, dur: 2.1 },
+      { tween: { fx: W / 2, fy: H / 2, zz: 1 }, dur: 0.25, ease: "out", wait: true },
+      { punch: 1.12, sound: false }, horn(1.5), { stinger: "jingle", arg: "warm" },
+      ...END(reward),
     ] : [
       { duck: 3, amt: 0.4 }, { call: () => meta.setDecorAnim(anim) }, { bg }, { set: { fx: W / 2, fy: H / 2, zz: 1, ak: 0 } },
-      { tween: { ak: 1 }, dur: 0.9, wait: true }, { punch: 1.1, sound: false }, { stinger: "jingle", arg: "warm" },
-      { call: (cs) => { cs.v.slam = cs.t; } }, { wait: 0.6 },
-      { reward: { ...reward, dur: 1.1 } },
+      { tween: { ak: 1 }, dur: 0.8, wait: true }, { punch: 1.1, sound: false }, horn(1.3), { stinger: "jingle", arg: "warm" },
+      ...END({ ...reward, dur: 1.1 }),
     ];
     return { steps, tick, end: () => meta.setDecorAnim(null) };
   },
-  // S3 — gear: the item spins in on a riser, hold, backdrop swap + punch + title_hit, stats "O₂ 90 → 135 s", token
+  // gear — full: the item spins in on a riser · brush-word "THỦY" over waves with the item · Út Sen's shades drop on the stat
+  // line ("deal with it" + airhorn) · the wallet chart dives "CÒN CÁI NỊT" · reward. Short: shades + stat · reward.
   gear(d, full) {
     const glyph = typeof d.glyph === "function" ? d.glyph : null, water = /oxy|O₂|phao|Máu|lao|vịt|giỏ|vợt/i.test((d.name || "") + (d.stat || ""));
     const drawItem = (c, x, y, s, spin) => {
@@ -277,62 +299,118 @@ const BUILD = {
       if (glyph) { try { glyph(c, -5, -5); } catch (e) {} } else { R(c, -4, -5, 8, 10, "#3fb6c4"); }
       c.restore();
     };
+    const itemArt = (g, k) => { g.save(); g.translate(0, -11); drawItem(g, 0, 0, 2.2, reduceMotion ? 0 : Math.sin(k * 3) * 0.4); g.restore(); };
     const bg = (c, cs) => {
-      const v = cs.v, k = clamp(v.spin || 0, 0, 1);
-      if (!cs.aura) { c.fillStyle = "#0b1a2a"; c.fillRect(0, 0, W, H); speedLines(c, W / 2, H / 2, cs.t, "rgba(120,220,255,.16)", 30); }
+      const k = clamp(cs.v.spin || 0, 0, 1);
+      c.fillStyle = "#0b1a2a"; c.fillRect(0, 0, W, H); speedLines(c, W / 2, H / 2, reduceMotion ? 0 : cs.t, "rgba(120,220,255,.16)", 30);
       c.save(); c.globalCompositeOperation = "lighter"; c.fillStyle = `rgba(160,240,255,${0.18 * k})`; c.beginPath(); c.arc(W / 2, H / 2 - 6, 54, 0, Math.PI * 2); c.fill(); c.restore();
-      drawItem(c, W / 2, lerp(H + 60, H / 2 - 6, ease.out(k)), 5 + k * 3, (1 - k) * 9 + (v.stats ? cs.t * 0.8 : 0));
-      if (v.stats != null) {
-        const sk = clamp((cs.t - v.stats) / 0.25, 0, 1);
-        slamText(d.name || "Đồ nghề mới", W / 2, 52, 22, { scale: lerp(2, 1, ease.out(sk)), color: "#fff", alpha: sk });
-        if (d.stat) { panel(W / 2 - 90, H - 62, 180, 24, { fill: "rgba(10,20,40,.85)", border: "#7ee8ff", r: 4, alpha: sk }); txt(d.stat, W / 2, H - 45, { size: 13, align: "center", color: "#7ee8ff", weight: 900, alpha: sk }); }
-      }
+      drawItem(c, W / 2, lerp(H + 60, H / 2 - 6, ease.out(k)), 5 + k * 3, reduceMotion ? 0 : (1 - k) * 9);
+      if (k > 0.6) slamText(d.name || "Đồ nghề mới", W / 2, 52, 22, { color: "#fff", alpha: clamp((k - 0.6) * 4, 0, 1) });
     };
-    const reward = { icon: (c, x, y) => drawItem(c, x + 16, y + 16, 3, 0), label: water ? "ĐỒ LẶN MỚI" : "ĐỒ NGHỀ MỚI", name: d.name || "Đồ nghề", sub: d.stat || "", cta: d.cta || (water ? "Đeo ngay" : "Dùng ngay"), seal: "MỚI", dur: 1.4 };
+    const reward = { icon: (c, x, y) => drawItem(c, x + 16, y + 16, 3, 0), label: water ? "ĐỒ LẶN MỚI" : "ĐỒ NGHỀ MỚI", name: d.name || "Đồ nghề", sub: d.stat || "", cta: d.cta || (water ? "Đeo ngay" : "Dùng ngay"), seal: "MỚI", dur: 1.2 };
+    const shades = (dur) => ({ meme: "shades", who: "sen", text: d.stat || "ĐỒ XỊN", sub: `${d.name || "Đồ mới"} · ngầu vậy đó, chịu hông?`, land: 0.7, dur });
     const steps = full ? [
-      { duck: 5, amt: 0.35 }, { bg }, { set: { spin: 0 } }, { stinger: "riser", arg: 1.3 }, { sfx: "swish" },
-      { tween: { spin: 1 }, dur: 1.0, ease: "out", wait: true },
-      { wait: 0.3 },                                                                            // still beat: the riser lands next
-      { aura: water ? "bubbles" : "rays", col: water ? "#1a6f8a" : "#b5462e" }, { punch: 1.25, sound: false }, { stinger: "title_hit" }, { shake: 4 },
-      { call: (cs) => { cs.v.stats = cs.t; } }, { wait: 1.4 },
-      { reward },
+      { duck: 7, amt: 0.35 }, { bg }, { set: { spin: 0 } }, { stinger: "riser", arg: 0.9 }, { sfx: "swish" },
+      { tween: { spin: 1 }, dur: 0.8, ease: "out", wait: true },
+      { meme: "kanji", art: itemArt, size: 7, text: water ? "THỦY" : "HỎA", sub: d.name || "Đồ nghề mới", bg: water ? "waves" : "flames", col: water ? "#0b1a3a" : "#160606", dur: 1.7 },
+      shades(1.9),
+      { meme: "notstonks", who: "sen", text: "VÍ: CÒN CÁI NỊT", amount: d.price ? `-${d.price}k` : "", dur: 1.6 },
+      ...END(reward),
     ] : [
-      { duck: 3, amt: 0.35 }, { bg }, { set: { spin: 0 } }, { tween: { spin: 1 }, dur: 0.5, ease: "out", wait: true },
-      { aura: water ? "bubbles" : "rays", col: water ? "#1a6f8a" : "#b5462e" }, { punch: 1.2, sound: false }, { stinger: "title_hit" },
-      { call: (cs) => { cs.v.stats = cs.t; } }, { wait: 1.0 }, { reward: { ...reward, dur: 1.1 } },
+      { duck: 3, amt: 0.35 }, { bg: DARK("#0b1a2a") }, shades(1.8), ...END({ ...reward, dur: 1.1 }),
     ];
     return { steps };
   },
-  // S4 — chore: Bà Tư inspects (stern hold + heartbeat) · ting · smile, lotus backdrop, punch, coins rain, "Giỏi lắm con!" · token
+  // chore — full: Bà Tư inspects with a magnifier (heartbeat) · Út Sen sweats · Bà Tư shock "!!" · tears of joy "Ối dồi ôi" ·
+  // stonks with the reward money · reward. Short: stonks · reward.
   chore(d, full) {
     const money = d.money | 0, rep = +d.rep || 0;
     const bg = (c, cs) => {
-      const v = cs.v;
-      if (!cs.aura) { c.fillStyle = "#2a1a14"; c.fillRect(0, 0, W, H); halftone(c, 0, 0, W, H, "rgba(255,200,140,.06)", 8, false); }
-      const S = v.happy ? 6 : 5.4, img = portrait("ba");
+      const t = cs.t, img = portrait("ba"), S = 5.4;
+      c.fillStyle = "#2a1a14"; c.fillRect(0, 0, W, H); halftone(c, 0, 0, W, H, "rgba(255,200,140,.06)", 8, false);
       portraitAt(c, "ba", W * 0.3 - img.width * S / 2, H - img.height * S + 4, S);
-      if (!v.happy) txt("…", W * 0.3 + 50, 70, { size: 20, color: "#fff", weight: 900 });
-      if (v.happy != null) {
-        const k = clamp((cs.t - v.happy) / 0.25, 0, 1);
-        coinRain(c, cs.t - v.happy);
-        slamText("Giỏi lắm con!", W * 0.66, H * 0.38, 26, { scale: lerp(2.2, 1, ease.out(k)), color: "#fff6c0", alpha: k });
-        const cnt = Math.round(money * clamp((cs.t - v.happy - 0.2) / 0.6, 0, 1));
-        txt(`+${cnt}k`, W * 0.66, H * 0.56, { size: 20, align: "center", color: "#ffd23f", weight: 900, stroke: "#3a1a08", sw: 4, alpha: k });
-        if (rep) txt(`+${rep} uy tín`, W * 0.66, H * 0.56 + 20, { size: 11, align: "center", color: "#bff3ff", weight: 900, stroke: "#1a1220", sw: 3, alpha: k });
-        confetti(c, W * 0.66, H * 0.45, cs.t - v.happy, 30);
-      }
+      txt("…", W * 0.3 + 50, 70, { size: 20, color: "#fff", weight: 900 });
+      const mx = reduceMotion ? W * 0.68 : W * 0.6 + Math.sin(t * 3) * 70, my = H * 0.52 + (reduceMotion ? 0 : Math.cos(t * 4.3) * 24); // magnifier sweeping the work
+      c.save(); c.fillStyle = "rgba(200,235,255,.25)"; c.beginPath(); c.arc(mx, my, 26, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = "#3a2a1a"; c.lineWidth = 5; c.stroke(); c.lineWidth = 7; c.beginPath(); c.moveTo(mx + 19, my + 19); c.lineTo(mx + 46, my + 46); c.stroke(); c.restore();
+      txt(d.title ? `Kiểm tra: ${d.title}` : "Kiểm tra…", W * 0.66, 40, { size: 11, align: "center", color: "#ffe2a8", weight: 900, stroke: "#1a0e08", sw: 3 });
     };
-    const reward = { icon: (c, x, y) => { R(c, x, y + 8, 30, 22, "#b8860b"); R(c, x + 2, y + 10, 26, 18, "#ffd23f"); R(c, x + 12, y + 12, 6, 14, "#fff3a8"); }, label: "PHẦN THƯỞNG", name: `+${money}k${rep ? ` · +${rep} uy tín` : ""}`, sub: d.title ? `Xong việc: ${d.title}` : "", cta: "Nhận", seal: "THƯỞNG", dur: 1.3 };
-    const payoff = [{ aura: "lotus", col: "#ffcf8a" }, { set: { happy: 0 } }, { call: (cs) => { cs.v.happy = cs.t; voiceLine("Bà Tư", "Giỏi lắm con!"); } }, { punch: 1.2, sound: false },
-      { stinger: "sting_win" }, { stinger: "coin_shower", arg: 1.2 }];
+    const reward = { icon: (c, x, y) => { R(c, x, y + 8, 30, 22, "#b8860b"); R(c, x + 2, y + 10, 26, 18, "#ffd23f"); R(c, x + 12, y + 12, 6, 14, "#fff3a8"); }, label: "PHẦN THƯỞNG", name: `+${money}k${rep ? ` · +${rep} uy tín` : ""}`, sub: d.title ? `Xong việc: ${d.title}` : "", cta: "Nhận", seal: "THƯỞNG", dur: 1.2 };
+    const stonks = (dur) => ({ meme: "stonks", who: "sen", text: "STONKS", amount: `+${money}k${rep ? ` · +${rep} uy tín` : ""}`, dur });
     const steps = full ? [
-      { duck: 4.5, amt: 0.35 }, { bg }, { sfx: "pick" }, { wait: 0.3 },
-      { sfx: "heartbeat" }, { wait: 0.8 },                                                      // the stern inspection (hold beat)
-      { stinger: "bell", arg: 5 }, { flash: "#fff", t: 0.06 }, { wait: 0.2 },
-      ...payoff, { wait: 1.2 },
-      { reward },
-    ] : [{ duck: 3, amt: 0.35 }, { bg }, ...payoff, { wait: 1.35 }, { reward: { ...reward, dur: 1.25 } }];
+      { duck: 7, amt: 0.35 }, { bg }, { sfx: "pick" }, { sfx: "heartbeat" }, { wait: 0.9 },             // the stern inspection
+      { meme: "sweat", who: "sen", text: "Bà… bà coi kỹ dữ vậy…", dur: 1.0 },
+      { meme: "shock", who: "ba", text: "!!", sub: "Làm xong thiệt hả?!", dur: 1.0 },
+      { call: () => voiceLine("Bà Tư", "Giỏi lắm con!") },
+      { meme: "tears", who: "ba", happy: true, sound: "sparkle", text: "Ối dồi ôi…\nGIỎI QUÁ CON ƠI", dur: 1.5 },
+      stonks(1.6),
+      ...END(reward),
+    ] : [
+      { duck: 3, amt: 0.35 }, { bg: DARK("#2a1a14") }, stonks(1.6), ...END({ ...reward, dur: 1.2 }),
+    ];
     return { steps };
+  },
+  // research (the big one, cooking-anime parody) — full: flaming brush-word dish name · ingredients fly into the pot in
+  // slow-mo · Salt Bae elbow sprinkle · taste → vine boom on Bà Tư · she ascends with star eyes + choir · impact
+  // "NGON BÁ CHÁY!!" · reward "ĐÃ HỌC MÓN". Short: Salt Bae "NGON BÁ CHÁY!!" · reward.
+  research(d, full) {
+    const id = d.id || "", name = d.name || id || "Món mới", price = d.price | 0, recipe = d.recipe || {};
+    const kinds = Object.entries(recipe).flatMap(([k, q]) => Array(clamp(q | 0, 0, 4)).fill(k)).slice(0, 4);
+    const need = Object.entries(recipe).map(([k, q]) => `${KIND_NAME[k] || k} ×${q}`).join(" + ");
+    const PX = Math.round(W * 0.62), PY = H - 64; // pot mouth
+    let landed = 0;
+    const tick = (cs) => { const k = cs.v.ing || 0; while (landed < kinds.length && k >= landed + 0.98) { landed++; sfx("bubble"); } };
+    const pot = (c, t) => {
+      R(c, PX - 34, PY + 8, 68, 30, "#9a4a30"); R(c, PX - 36, PY + 6, 72, 4, "#c06a45"); R(c, PX - 12, PY + 18, 24, 14, P.ink); // clay stove
+      const fl = Math.round(Math.sin(t * 22)); R(c, PX - 9, PY + 24 + fl, 18, 8, P.orange); R(c, PX - 5, PY + 20 - fl, 10, 6, P.yellow);
+      R(c, PX - 28, PY - 14, 56, 22, "#2a2a32"); R(c, PX - 30, PY - 16, 60, 4, "#5a5a68"); R(c, PX - 22, PY - 13, 44, 3, "#c97a52"); // pot + broth
+      for (let i = 0; i < 7; i++) { // steam puffs
+        const k = (t * 0.6 + i / 7) % 1, x = PX - 18 + i * 6 + Math.sin(k * 7 + i) * 5, y = PY - 18 - k * 70, r = 3 + k * 7;
+        c.globalAlpha = 0.45 * (1 - k); c.fillStyle = "#f4f0ff"; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+      }
+      c.globalAlpha = 1;
+    };
+    // slow-mo shot: ingredients drift in on long arcs, spinning, letterboxed with a "QUAY CHẬM" tag
+    const bg = (c, cs) => {
+      const v = cs.v, t = reduceMotion ? 0 : cs.t * 0.25; // everything in the shot runs at quarter speed
+      c.fillStyle = "#2a1a14"; c.fillRect(0, 0, W, H); halftone(c, 0, 0, W, H, "rgba(255,180,120,.06)", 8, false); R(c, 0, H - 34, W, 34, "#3a2414");
+      const img = portrait("ba"), S = 5;
+      portraitAt(c, "ba", 34, H - img.height * S + 4, S);
+      pot(c, t);
+      c.save(); c.imageSmoothingEnabled = false;
+      kinds.forEach((k, i) => {
+        const p = clamp((v.ing || 0) - i, 0, 1); if (p <= 0 || p >= 1) return;
+        const x = lerp(W + 16, PX, p), y = lerp(40, PY - 18, p) - Math.sin(p * Math.PI) * 60;
+        c.save(); c.translate(Math.round(x), Math.round(y)); if (!reduceMotion) c.rotate(p * 4); try { c.drawImage(icon(k), -16, -16, 32, 32); } catch (e) {} c.restore();
+        c.fillStyle = "rgba(255,255,255,.35)"; for (let j = 1; j <= 3; j++) c.fillRect(Math.round(x + j * 10), Math.round(y - 2 + j), 6, 1); // motion streaks
+      });
+      c.restore();
+      const bh = 30; c.fillStyle = "#000"; c.fillRect(0, 0, W, bh); c.fillRect(0, H - bh, W, bh);
+      txt("● QUAY CHẬM ×0.25", W - 14, 20, { size: 9, align: "right", color: Math.floor(cs.t * 2) % 2 && !reduceMotion ? "#ff4a4a" : "#ff8a8a", weight: 900 });
+      txt(need, W / 2, H - 11, { size: 9, align: "center", color: "#ffe2a8", weight: 800, italic: true });
+    };
+    const reward = { icon: (c, x, y) => { try { c.drawImage(dishIcon(id), x, y - 2, 48, 48); } catch (e) {} }, label: "ĐÃ HỌC MÓN", name,
+      sub: `Cần: ${need}${d.cook_s ? ` · ${d.cook_s} s` : ""} · bán ${price}k`, cta: "Nấu thôi!", seal: "NGON", dur: 1.2 };
+    const steps = full ? [
+      { duck: 7.5, amt: 0.4 }, { bg: DARK("#2a1a14") },
+      { meme: "kanji", who: "ba", text: twoLines(upper(name)), sub: `Món mới · bán ${price}k/phần`, bg: "flames", dur: 1.3 },
+      { bg }, { set: { ing: 0 } }, { msfx: "slowmo", dur: 1.3 }, { sfx: "sizzle" },
+      { tween: { ing: kinds.length }, dur: 1.2, wait: true },
+      { meme: "saltbae", dish: id, text: "RẮC MUỐI KIỂU CÁCH", sub: "(bí truyền 40 năm của Bà Tư)", dur: 1.3 },
+      { call: () => voiceLine("Bà Tư", "Ừm…") },
+      { meme: "vineboom", who: "ba", text: "(nếm thử một miếng…)", dur: 0.75 },
+      { call: () => voiceLine("Bà Tư", "Ngon! Ra món rồi nè con!") },
+      { bg: DARK("#fff1c8") }, // heaven: drop the slow-mo shot (its tag + portrait showed through the light beam)
+      { meme: "ascend", who: "ba", stars: true, text: "NGON XỈU UP XỈU DOWN", dur: 1.6, hold: 0.9 },
+      { meme: "impact", text: "NGON BÁ CHÁY!!", sub: name, col: "#ffd23f", bgCol: "rgba(90,20,10,.6)", dur: 0.9 },
+      { stinger: "jingle", arg: "warm" },
+      ...END(reward),
+    ] : [
+      { duck: 3, amt: 0.4 }, { bg: DARK("#1a0e0a") },
+      { meme: "saltbae", dish: id, text: "NGON BÁ CHÁY!!", sub: name, dur: 1.6 }, { stinger: "jingle", arg: "warm" },
+      ...END({ ...reward, dur: 1.2 }),
+    ];
+    return { steps, tick };
   },
 };
 export const ACTION_KINDS = Object.keys(BUILD);

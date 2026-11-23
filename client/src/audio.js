@@ -389,3 +389,5 @@ export function sfx(name, arg, cap) {
   }
   SYNTH[name]?.();
 }
+// meme_sfx.js (cutscene meme kit): live context + cinematic bus/reverb send, or null before unlock / while muted
+export const memeBus = () => (ac && cine && !muted ? { ac, out: cine, verb: cineVerb } : null);
