@@ -8,6 +8,7 @@ import { portrait, icon, dishIcon, DISH_NAME, KIND_NAME, premiumBadge } from "./
 import { menuAll, isPremiumDish } from "./menu.js"; // contract menu + GUI-only Đặc sản dishes
 import { riverWorld } from "./story.js";
 import * as progress from "./progress.js";
+import { OXY_MUL, DIVE_TIME_S, SERVICE_TIME_S, fmtClock } from "./gui_tuning.js"; // GUI scaling knobs
 import * as board from "./leaderboard.js"; // Phase 4 extension: local top 10 after the last day
 import { freshCfg, freshestFirst, isSpoiled, nextItemId, idNum } from "./fresh.js";
 
@@ -84,7 +85,7 @@ export class DayIntro extends Base {
   draw() {
     this.bg(); const u = screen.ui, t = this.t, k = clamp(t / 0.4, 0, 1);
     txt(`NGÀY ${this.day}`, W / 2, 42, { size: 30 * (1.4 - 0.4 * k), align: "center", color: GOLD, weight: 900, italic: true, stroke: "#3a1410", sw: 6, rot: -0.03 });
-    txt(`Đồ nghề hôm nay: O₂ ${this.st.oxygenMax} s · Máu ${this.st.hpMax}`, W / 2, 58, { size: 8, align: "center", color: "#bff3ff", weight: 800, stroke: "#06101e", sw: 2 });
+    txt(`Đồ nghề hôm nay: O₂ ${this.st.oxygenMax} s · Máu ${this.st.hpMax} · Lặn ${fmtClock(DIVE_TIME_S)} · Quán ${fmtClock(SERVICE_TIME_S)}`, W / 2, 58, { size: 8, align: "center", color: "#bff3ff", weight: 800, stroke: "#06101e", sw: 2 });
     // Má Tư dialogue box (portrait + typewriter line)
     const bx = 20, by = 66, bw = W - 40, bh = 58;
     panel(bx, by, bw, bh, { fill: "rgba(20,10,24,.9)", border: BORDER, r: 8, bw: 1.5 });
@@ -316,7 +317,7 @@ export class DayResult extends Base {
 // no timer in the GUI (the headless contract still auto-closes its shop after tuning.shop.max_ticks; the GUI is a
 // creative layer and never rushes the player). opts.leftover = tonight's leftover quán items (spoiled included), mutated by sales and
 // thrown away by main.js when the Shop closes. this.bought = { kind: n } bought this visit (main.js sends Chú Sáu's message).
-export const CU = { oxygen: { name: "Bình oxy", eff: (l) => `O₂ ${l.oxygen_max_s} s` }, hp: { name: "Áo phao (thêm Máu)", eff: (l) => `${l.hp_max} Máu` } };
+export const CU = { oxygen: { name: "Bình oxy", eff: (l) => `O₂ ${l.oxygen_max_s * OXY_MUL} s` }, hp: { name: "Áo phao (thêm Máu)", eff: (l) => `${l.hp_max} Máu` } };
 export const SHOP_TABS = ["NÂNG CẤP", "CHỢ CHÚ SÁU"];
 export class Shop extends Base {
   constructor(contract, nextLabel, onDone, opts = {}) {

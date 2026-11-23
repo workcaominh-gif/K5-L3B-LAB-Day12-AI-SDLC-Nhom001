@@ -2,6 +2,7 @@
 // Rắn nước (water snake): patrol → alert → pursue → bite → retreat → return. Not food: Space stuns it.
 // Not part of Test Contract v1.0 (headless sim has no creatures). World units: x/d in metres.
 import { W, txt } from "./engine.js";
+import { REACHES, REACH_M } from "./gui_tuning.js"; // big map: the homes repeat (shifted) in every 100 m reach
 
 export const SNAKE = {
   id: "ran_nuoc", name: "Rắn nước",
@@ -24,12 +25,14 @@ export const SNAKE = {
   hp: 6,               // GUI hunting: spear damage per hit; 0 HP = defeated for the rest of the dive
   bounty: 20,          // k paid when defeated (+ 1 thịt rắn dropped into the basket, menu.js)
   sinkS: 2,            // seconds sinking before it is removed
-  // homes: 4 in the contract river (8–28 m), 2 in the deep zone
+  // homes per 100 m reach: 4 in the contract river (8–28 m), 2 in the deep zone (makeSnakes repeats them per reach)
   spawns: [[24, 20], [52, 26], [68, 12], [84, 25], [45, 47], [88, 53]],
 };
 
 export function makeSnakes(deepZone) {
-  return SNAKE.spawns.map(([x, d], i) => {
+  const homes = []; // reach 0 = the original homes; reaches 1.. shifted ±4 m / ±2 m so they don't look copy-pasted
+  for (let k = 0; k < REACHES; k++) SNAKE.spawns.forEach(([x, d], i) => homes.push(k === 0 ? [x, d] : [x + k * REACH_M + ((i + k) % 2 ? 4 : -4), d + (d > deepZone ? 0 : ((i + k) % 3) - 1) * 2]));
+  return homes.map(([x, d], i) => {
     const seg = new Float32Array(SNAKE.segs * 2);
     for (let k = 0; k < SNAKE.segs; k++) { seg[k * 2] = x - k * 0.22; seg[k * 2 + 1] = d; }
     return { id: "S" + (i + 1), hx: x, hd: d, x, d, vx: 0, vd: 0, face: 1, state: "patrol", tm: 0, dir: i % 2 ? -1 : 1,

@@ -12,6 +12,7 @@ import { personSide, scaled, sampan, glow, steam } from "./raft.js";
 import { ShopPopup } from "./shop_popup.js";
 import { planFor, deliveryText, dueOn } from "./scene_day.js";
 import * as progress from "./progress.js";
+import { DIVE_TIME_S, SERVICE_TIME_S, MAP_WIDTH_M, MAP_DEPTH_M, fmtClock } from "./gui_tuning.js"; // GUI scaling knobs
 import { highContrast } from "./a11y.js";
 
 const HORIZON = 112, X0 = 30, XS = 26, Y0 = 228, ZS = 6;
@@ -193,6 +194,9 @@ export class DockHub {
     panel(6, 5, 112, 15, { fill: "rgba(42,24,14,.88)", border: "#e8b04a", r: 6 });
     txt(`${night ? "Đêm" : "Sáng"} · Ngày ${night ? s.day - 1 : s.day}`, 12, 15.5, { size: 8, color: "#ffd23a", weight: 900 });
     txt(`Ví ${s.money | 0}k`, 112, 15.5, { size: 8, align: "right", color: "#ffe14d", weight: 900 });
+    { let oxy = "?"; try { oxy = progress.stats(this.c).oxygenMax; } catch (e) {} // today's dive / shift card (gui_tuning.js)
+      panel(6, 22, 146, 13, { fill: "rgba(8,20,38,.82)", border: "#7ac0ff", r: 5 });
+      txt(night ? `Quán tối ${fmtClock(SERVICE_TIME_S)}` : `Lặn ${fmtClock(DIVE_TIME_S)} · O₂ ${oxy}s · ${MAP_WIDTH_M}×${MAP_DEPTH_M}m`, 12, 31.5, { size: 7, color: "#bff3ff", weight: 800 }); }
     // top-right: today's plan / needed list (dawn) or tomorrow's plan + deliveries (night)
     const day = s.day, plan = planFor(this.c, day), ing = plan ? Object.entries(plan.ingredients || {}) : [];
     const due = dueOn(s.pendingDelivery, night ? day : day).filter((it) => (it.day ?? day) <= day);

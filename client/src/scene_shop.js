@@ -9,6 +9,7 @@ import { sfx, music } from "./audio.js";
 import { fish, icon, dishIcon, DISH_NAME, KIND_NAME } from "./art.js";
 import { riverWorld } from "./story.js";
 import * as progress from "./progress.js";
+import { OXY_MUL } from "./gui_tuning.js";
 import { menuAll } from "./menu.js";
 import * as Deep from "./deep.js"; // namespace import: tolerant of the deep agent renaming helpers
 
@@ -275,7 +276,7 @@ export class ShopScene {
   effect(id, lv) {
     const U = progress.UPGRADES[id], g = this.contract.tuning.gather, e = U.eff[lv];
     switch (id) {
-      case "oxy": return `${g.oxygen_max_s + e}s`;
+      case "oxy": return `${(g.oxygen_max_s + e) * OXY_MUL}s`;
       case "cap": return `${g.hold_capacity + e} món`;
       case "fins": return `×${+e.toFixed(2)}`;
       case "net": return `${(g.catch_radius + e).toFixed(1)} m`;

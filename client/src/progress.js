@@ -2,6 +2,8 @@
 // day counter, wallet, upgrades, species catalog, save/load. Scenes read stats(contract) and report back
 // through the record* helpers; only main.js / the shop scene advance days or spend money.
 
+import { OXY_MUL } from "./gui_tuning.js"; // GUI scaling knobs (contract numbers stay the base)
+
 const KEY = "chonoi.save.v1";
 
 // Each upgrade has levels; `eff` is the bonus at each level (index 0 = not bought).
@@ -53,7 +55,8 @@ export function stats(contract) {
   const lv = (id) => (contract.tuning.shop?.upgrades?.[id] || [])[(save.active?.[id] || 0) - 1];
   return {
     // core (Test Contract v1.1): oxygen / hp come from the contract base or the ACTIVE contract upgrade level
-    oxygenMax: lv("oxygen")?.oxygen_max_s ?? g.oxygen_max_s,
+    // GUI: × OXY_MUL (gui_tuning.js) on top — contract 30 / 45 / 60 s → 90 / 135 / 180 s; headless keeps the contract values
+    oxygenMax: (lv("oxygen")?.oxygen_max_s ?? g.oxygen_max_s) * OXY_MUL,
     hpMax: lv("hp")?.hp_max ?? g.hp_max,
     // GUI (Sáng tạo): the basket starts 10× the contract's hold_capacity; headless keeps 12
     holdCap: g.hold_capacity * GUI_HOLD_MUL + UPGRADES.cap.eff[u.cap],

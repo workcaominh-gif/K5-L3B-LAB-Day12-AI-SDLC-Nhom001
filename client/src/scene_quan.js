@@ -3,6 +3,7 @@
 // Gameplay still lives in contract units: x in [0,16] runs left→right along the deck, z in [0,10] is depth
 // (z = 0 front edge, z = 10 back rail). Screen: sx = X0 + x·XS, sy = Y0 − z·ZS (back rows higher and smaller).
 import { W, H, screen, input, clamp, lerp, fx, Particles, txt, panel, measure, wrap } from "./engine.js";
+import { SERVICE_TIME_S } from "./gui_tuning.js"; // GUI scaling knobs (night shift length)
 import { sfx, music, voiceLine } from "./audio.js";
 import { P, R, ripple, dishIcon, icon, DISH_NAME, KIND_NAME, premiumBadge } from "./art.js";
 import { menuAll, isPremiumDish, isPremiumKind } from "./menu.js"; // contract menu + GUI-only Đặc sản dishes
@@ -140,7 +141,7 @@ export class QuanScene {
     const n = Math.max(1, st && st.tables > 0 ? st.tables | 0 : base.length);
     for (let i = base.length; i < n; i++) base.push({ id: "T" + (i + 1), pos: [clamp(9 + 3 * i, t.bounds.x[0] + 1, t.bounds.x[1] - 1), i % 2 ? 5 : 2] });
     this.tables = base.slice(0, n);
-    this.hand = null; this.customers = []; this.time = t.duration_s;
+    this.hand = null; this.customers = []; this.time = SERVICE_TIME_S; // GUI shift length (gui_tuning.js; contract quan.duration_s stays the headless base)
     // opts.rep: reputation carried over from the previous day (v1.1 day loop); tips / sold feed DayResult + Summary
     this.money = 0; this.rep = typeof opts?.rep === "number" ? opts.rep : t.reputation_initial; this.score = 0; this.rep0 = this.rep;
     this.tips = 0; this.sold = {}; this.missed = 0; // missed = guests who came, found nothing cookable and went home
@@ -159,7 +160,7 @@ export class QuanScene {
       if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) this.requestClose();
     };
     addEventListener("pointerdown", this._onMove);
-    this.nextCust = t.first_customer_tick / 60; this.custSeq = 0; this.time0 = t.duration_s;
+    this.nextCust = t.first_customer_tick / 60; this.custSeq = 0; this.time0 = SERVICE_TIME_S;
     this.cam = { x: t.bounds.x[1] / 2, z: t.bounds.z[1] / 2 };
     this.ps = new Particles(); this.toasts = []; this.ended = false; this.result = null;
     this.menuOpen = false; this.menuSel = 0; this.hintT = 4; this.started = false; this.repFlash = 0;
@@ -784,7 +785,7 @@ export class QuanScene {
   draw() {
     const c = screen.px, time = performance.now() / 1000;
     this.bob = Math.round(Math.sin(time * 1.2) * 0.7);
-    const dusk = clamp(1 - (1 - this.time / this.t.duration_s) / 0.3, 0, 1); // sunset fades out over the first 30% of the shift
+    const dusk = clamp(1 - (1 - this.time / this.time0) / 0.3, 0, 1); // sunset fades out over the first 30% of the shift
     c.imageSmoothingEnabled = false;
     // ---- river backdrop (no back wall: the whole Mekong night behind the raft) ----
     this.cs.t = time;

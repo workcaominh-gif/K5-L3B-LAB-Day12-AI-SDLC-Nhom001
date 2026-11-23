@@ -1,5 +1,7 @@
 // GATHER scene — GUI ONLY. Local mock physics so it's playable now; swap `st` for the server snapshot later.
-// World units: x in [0,100], d (depth) in [0,30], d=0 is the surface. Camera follows the diver on x.
+// World units: contract x in [0,100], d in [0,30], d=0 is the surface. BIG MAP (gui_tuning.js, GUI only): x ∈ [0,300] =
+// 3 "reaches" that each repeat the contract layout (nodes, spawn columns, croc lanes), d ∈ [0,150] in 4 zones (Nước nông,
+// Vùng sâu, Tầng chạng vạng, Vực thẳm), 3 docks (any one ends the dive), O₂ ×3, 6-minute dive. Camera follows the diver.
 // Core rules mirrored from Test Contract v1.1 (numbers from tuning.gather): swimming fish schools + scheduled
 // spawns, Cá Sấu Năm Chèo (croc.js), HP / faint, oxygen / choke, docking, the day's NEEDED list.
 // Sáng tạo (creative extras, never change the core numbers above): harpoon aiming, sprint, deep zone 30–60 m
@@ -18,7 +20,8 @@ import { W, H, screen, input, clamp, lerp, fx, Particles, txt, panel, measure, r
 import { sfx, music, voiceLine } from "./audio.js";
 import { P, R, bands, sky, sun, cloud, bank, hyacinth, godRays, kelp, rock, WATER, diver, fish, nodeArt, dock, KIND_NAME, icon } from "./art.js";
 import { speedLines } from "./cutscene.js";
-import { DEEP, preloadDeep, makeDeepFish, updateDeepFish, drawDeepFish, drawDeepScenery, hurtDeepFish, deepBox, placeDeep, leanKelp } from "./deep.js";
+import { DEEP, preloadDeep, makeDeepFish, updateDeepFish, drawDeepFish, drawDeepScenery, hurtDeepFish, deepBox, placeDeep, leanKelp, drawPlankton } from "./deep.js";
+import { DIVE_TIME_S, MAP_WIDTH_M, MAP_DEPTH_M, REACH_M, REACHES, ZONES, DOCKS, FISH_MUL, zoneIndex, zoneTop, reachOf, nearestDock } from "./gui_tuning.js"; // GUI scaling knobs
 import { Terrain, preloadTerrain } from "./terrain.js";           // creative: deep-zone rock with collision + parallax ridges
 import { Flood, ChannelFx, updateFloodFx, drawFloodFx } from "./current.js"; // v1.2 §2 Dòng nước lũ + deep current channels
 import { SNAKE, makeSnakes, updateSnakes, drawSnake, snakeInReach, stunSnake, damageSnake } from "./creatures.js";
@@ -37,6 +40,8 @@ const HURT_CAP = { croc: "[Cá Sấu cắn]", choke: "[ngạt nước]", fish: "
 const hcCol = (k, d) => A11Y.HC?.[k] ?? d; // a11y.HC palette: warn / danger / outline / light
 
 const VS = 10; // vertical px per metre (camera scrolls with depth)
+// labels on the zone boundary lines (index = zone below the line)
+const ZONE_LINE = ["", "— VÙNG SÂU · cá to —", "— TẦNG CHẠNG VẠNG · tối, cá lạ —", "— VỰC THẲM · O₂ ×" + ZONES[3].pressure + " · Cá Tra Dầu —"];
 
 const TAU = Math.PI * 2;
 
@@ -64,24 +69,31 @@ export class GatherScene {
     // v1.2 freshness: items[i] = { id, kind, fresh, spoiled } kept in step with hold[i] (syncFrom), pick order
     this.items = []; this.fresh = freshCfg(contract);
     this.dmg = st.spearDmg ?? 1; this.pops = []; this.bossSeen = false; // hunting: spear damage, floating damage numbers
-    this.time = t.duration_s; this.invuln = 0; this.catchCd = 0; this.zeroOxy = 0;
-    this.nodes = t.nodes.map((n) => ({ ...n, ready: true, regrow: 0, pop: 0 }));
+    this.time = DIVE_TIME_S; this.invuln = 0; this.catchCd = 0; this.zeroOxy = 0; // GUI dive length (contract duration_s = headless base)
+    // big map: the contract layout repeats in every 100 m reach (ids N1… in reach 0, N1-2… / N1-3… further out)
+    this.maxX = MAP_WIDTH_M; this.fishMax = (t.fish_max ?? 12) * FISH_MUL;
+    this.spawnXs = []; for (let k = 0; k < REACHES; k++) for (const x of t.fish_spawn_x || []) this.spawnXs.push(x + k * REACH_M);
+    this.nodes = []; for (let k = 0; k < REACHES; k++) for (const n of t.nodes) this.nodes.push({ ...n, id: k ? n.id + "-" + (k + 1) : n.id, pos: [n.pos[0] + k * REACH_M, n.pos[1]], ready: true, regrow: 0, pop: 0 });
     // v1.0: fish_initial is a list of schools; v1.1: a count, each placed with the same weighted procedure as the
     // scheduled spawn (pickSpawn: fish_weights over species with a free point, uniform point, clearance)
     this.fishSeq = 0; this.fish = [];
     if (Array.isArray(t.fish_initial)) this.fish = t.fish_initial.map((f) => this.newSchool(f.kind, f.pos[0], f.pos[1]));
-    else for (let i = 0; i < t.fish_initial; i++) { const q = this.pickSpawn(this.fish); if (!q) break; this.fish.push(this.newSchool(q.kind, q.pos[0], q.pos[1])); }
+    else for (let i = 0; i < t.fish_initial * FISH_MUL; i++) { const q = this.pickSpawn(this.fish); if (!q) break; this.fish.push(this.newSchool(q.kind, q.pos[0], q.pos[1])); }
     // quest guarantee (GUI): top up with the needed kinds right away (within fish_max)
-    for (let guard = 0; guard < 6 && Array.isArray(this.fish) && this.fish.length < (t.fish_max ?? 12); guard++) {
+    for (let guard = 0; guard < 6 && Array.isArray(this.fish) && this.fish.length < this.fishMax; guard++) {
       const k = this.questKind(this.fish); if (!k) break; const q = this.pickSpawn(this.fish, k); if (!q) break; this.fish.push(this.newSchool(q.kind, q.pos[0], q.pos[1]));
     }
     this.fullHintT = 0; // "river full" guidance toast, at most once per 30 s
     this.spawnT = 0;
     // Cá Sấu Năm Chèo: M1 from day 1, M2 only from_day 3 (standalone gather = day-1 layout)
-    this.mon = t.monsters || null; this.crocs = makeCrocs(this.mon, this.day); this.crocWarn = 0;
+    // big map: the M1 / M2 patrols repeat in every reach (still filtered by from_day in makeCrocs)
+    this.mon = t.monsters ? { ...t.monsters, spawns: [] } : null;
+    if (this.mon) for (let k = 0; k < REACHES; k++) for (const sp of t.monsters.spawns || []) this.mon.spawns.push({ ...sp, id: k ? sp.id + "-" + (k + 1) : sp.id, pos: [sp.pos[0] + k * REACH_M, sp.pos[1]], waypoints: sp.waypoints.map((w) => [w[0] + k * REACH_M, w[1]]) });
+    this.crocs = makeCrocs(this.mon, this.day); this.crocWarn = 0;
     this.yield = t.fish_yield || {};
     // creative extension: the client river goes deeper than the contract (see deep.js)
-    this.maxD = Math.max(t.bounds.d[1], DEEP.depth); preloadDeep(); this.deep = makeDeepFish(); this.camY = 0; this.deepSeen = false;
+    this.maxD = Math.max(t.bounds.d[1], MAP_DEPTH_M); preloadDeep(); this.deep = makeDeepFish(); this.camY = 0; this.deepSeen = false;
+    this.zone = 0; this.zoneMax = 0; this.banner = null; this.darkCv = null; // depth zones (gui_tuning.ZONES): banner on change
     this.deepEnv = { px: 0, pd: 0, contact: (f, nx, nd) => this.bossRam(f, nx, nd), blocked: (x, d, r) => this.ter.fishBlocked(x, d, r) };
     // terrain (deterministic per day): every deep spawn / patrol in open water; GUI only, d > 30 m
     this.ter = new Terrain(this.day * 7919 + 17); preloadTerrain(); placeDeep(this.deep, this.ter, this.maxD);
@@ -97,7 +109,7 @@ export class GatherScene {
     // aggressive creature (creatures.js); env is reused every frame (no per-frame allocation)
     this.snakes = makeSnakes(DEEP.zone); this.snakeSeen = !!save.catalog[SNAKE.id];
     for (const s of this.snakes) if (s.d > DEEP.zone) { const [x, d] = this.ter.openSpot(s.x, s.d, 1.2); const dx = x - s.x, dd = d - s.d; s.x = x; s.d = d; if (s.hx != null) { s.hx += dx; s.hd += dd; } if (s.seg) for (let k = 0; k < s.seg.length; k += 2) { s.seg[k] += dx; s.seg[k + 1] += dd; } }
-    this.snakeEnv = { px: 0, pd: 0, underwater: false, swim: this.swim, deepZone: DEEP.zone, maxD: this.maxD, maxX: t.bounds.x[1], sx: W / 26, sy: VS,
+    this.snakeEnv = { px: 0, pd: 0, underwater: false, swim: this.swim, deepZone: DEEP.zone, maxD: this.maxD, maxX: this.maxX, sx: W / 26, sy: VS,
       bite: (s, nx, nd) => this.snakeBite(s, nx, nd), seen: () => this.onSnakeSeen() };
     this.cam = t.start_pos[0]; this.ps = new Particles(); this.psUI = new Particles();
     this.toasts = []; this.ended = false; this.hintT = 4; this.danger = 0; this.flashHurt = 0;
@@ -110,7 +122,7 @@ export class GatherScene {
   }
   // swimming school (v1.1): fish_speed along a random heading, re-rolled every fish_turn_ticks, reflected at edges
   newSchool(kind, x, d) {
-    const f = { id: "F" + (++this.fishSeq), kind, x, d, face: 1, caught: false, phase: Math.random() * 6, vx: 1, vd: 0, turn: (this.t.fish_turn_ticks || 120) / this.hz };
+    const f = { id: "F" + (++this.fishSeq), kind, x, d, ox: reachOf(x) * REACH_M, face: 1, caught: false, phase: Math.random() * 6, vx: 1, vd: 0, turn: (this.t.fish_turn_ticks || 120) / this.hz }; // ox: its reach (fish_x is reach-local)
     this.heading(f); return f;
   }
   heading(f) { const a = Math.random() * TAU; f.vx = Math.cos(a); f.vd = Math.sin(a); f.face = f.vx >= 0 ? 1 : -1; }
@@ -122,9 +134,10 @@ export class GatherScene {
       if (f.turn <= 0) { f.turn += turnS; this.heading(f); }
       const band = (t.fish_depths || {})[f.kind] || [1, t.bounds.d[1] - 1];
       let nx = f.x + f.vx * sp * dt, nd = f.d + f.vd * sp * dt;
-      if (nx < fx0[0]) { nx = 2 * fx0[0] - nx; f.vx = -f.vx; } else if (nx > fx0[1]) { nx = 2 * fx0[1] - nx; f.vx = -f.vx; }
+      const xa = fx0[0] + (f.ox || 0), xb = fx0[1] + (f.ox || 0);
+      if (nx < xa) { nx = 2 * xa - nx; f.vx = -f.vx; } else if (nx > xb) { nx = 2 * xb - nx; f.vx = -f.vx; }
       if (nd < band[0]) { nd = 2 * band[0] - nd; f.vd = -f.vd; } else if (nd > band[1]) { nd = 2 * band[1] - nd; f.vd = -f.vd; }
-      f.x = Math.max(fx0[0], Math.min(fx0[1], nx)); f.d = Math.max(band[0], Math.min(band[1], nd));
+      f.x = Math.max(xa, Math.min(xb, nx)); f.d = Math.max(band[0], Math.min(band[1], nd));
       if (Math.abs(f.vx) > 0.05) f.face = f.vx > 0 ? 1 : -1;
     }
     // scheduled spawn: every fish_spawn_ticks, at most one school, under fish_max, clearance from every live school
@@ -136,7 +149,7 @@ export class GatherScene {
     this.spawnT -= every;
     let alive = this.fish.filter((f) => !f.caught);
     const want = this.questKind(alive);
-    if (alive.length >= (t.fish_max ?? 12)) {
+    if (alive.length >= this.fishMax) {
       // river full but a quest fish is missing: swap out the farthest off-screen school the quest doesn't need
       if (!want) return;
       const need = this.need || {}, p = this.p;
@@ -166,11 +179,13 @@ export class GatherScene {
   pickSpawn(alive, prefer = null) {
     const t = this.t, clear = t.fish_spawn_clearance ?? 1, ok = {};
     for (const [kind, ds] of Object.entries(t.fish_spawn_depths || {})) {
-      const pts = []; for (const x of t.fish_spawn_x || []) for (const d of ds) if (alive.every((f) => f.caught || Math.hypot(f.x - x, f.d - d) > clear)) pts.push([x, d]);
+      const pts = []; for (const x of this.spawnXs || t.fish_spawn_x || []) for (const d of ds) if (alive.every((f) => f.caught || Math.hypot(f.x - x, f.d - d) > clear)) pts.push([x, d]);
       if (pts.length) ok[kind] = pts;
     }
     const kinds = Object.keys(ok); if (!kinds.length) return null;
-    if (prefer && ok[prefer]) return { kind: prefer, pos: ok[prefer][Math.floor(Math.random() * ok[prefer].length)] };
+    if (prefer && ok[prefer]) { // quest fish: spawn in the diver's own reach when it has a free point (big map)
+      const rc = reachOf(this.p?.x ?? 0), mine = ok[prefer].filter((q) => reachOf(q[0]) === rc), pts = mine.length ? mine : ok[prefer];
+      return { kind: prefer, pos: pts[Math.floor(Math.random() * pts.length)] }; }
     const wts = kinds.map((k) => (t.fish_weights || {})[k] ?? 1), sum = wts.reduce((a, b) => a + b, 0);
     let r = Math.random() * sum, kind = kinds[kinds.length - 1];
     for (let i = 0; i < kinds.length; i++) { r -= wts[i]; if (r < 0) { kind = kinds[i]; break; } }
@@ -200,7 +215,7 @@ export class GatherScene {
   riverFullHint(dt) {
     if (this.fullHintT > 0) { this.fullHintT -= dt; return; }
     const alive = this.fish.filter((f) => !f.caught).length;
-    if (alive < (this.t.fish_max ?? 12)) return;
+    if (alive < this.fishMax) return;
     const miss = this.radarTargets().find((r) => !r.f && !r.node);
     if (miss) { this.toast("Sông đầy cá rồi — bắt bớt cá khác để " + KIND_NAME[miss.kind] + " ghé tới", "#9fd8ff"); this.fullHintT = 30; }
   }
@@ -218,7 +233,9 @@ export class GatherScene {
   nearestNode() { let best = null, bd = 1e9; for (const n of this.nodes) { if (!n.ready) continue; const dx = n.pos[0] - this.p.x, dd = (0) - this.p.d; const r = Math.hypot(dx, dd); if (r < bd) { bd = r; best = n; } } return bd <= this.t.interact_radius ? best : null; }
   // reach = upgraded catch radius; big deep fish keep their larger body radius plus the same net bonus
   nearestFish() { const cr = this.catchR, bonus = cr - this.t.catch_radius; let best = null, bd = 1e9; for (const f of [...this.fish, ...this.deep]) { if (f.caught) continue; const r = Math.hypot(f.x - this.p.x, f.d - this.p.d) - (f.sp ? Math.max(cr, f.sp.radius + bonus) : cr); if (r < bd) { bd = r; best = f; } } return bd <= 0 ? best : null; }
-  atDock() { return Math.hypot(this.p.x - this.t.dock_pos[0], this.p.d - this.t.dock_pos[1]) <= this.t.dock_radius; }
+  // big map: DOCKS (gui_tuning.js) — the contract dock x=2 plus moored ghe at 150 / 298; any one ends the dive the same way
+  atDock() { return this.dockAt() != null; }
+  dockAt() { for (const x of DOCKS) if (Math.hypot(this.p.x - x, this.p.d - this.t.dock_pos[1]) <= this.t.dock_radius) return x; return null; }
 
   endRun(reason) {
     if (this.ended) return; this.ended = true; this.flood?.stop("phase_end");
@@ -247,7 +264,7 @@ export class GatherScene {
     const p = this.p;
     this.hurt(); fx.shake(4, 0.3); sfx("slam");
     this.toast(SNAKE.name + " cắn!", "#ff9a5a");
-    p.x = clamp(p.x + nx * SNAKE.push, 0, this.t.bounds.x[1]); p.d = clamp(p.d + nd * SNAKE.push, this.t.surface_depth + 0.1, this.maxD);
+    p.x = clamp(p.x + nx * SNAKE.push, 0, this.maxX); p.d = clamp(p.d + nd * SNAKE.push, this.t.surface_depth + 0.1, this.maxD);
     p.vx = nx * this.swim * 2; p.vd = nd * this.swim * 2; this.unstick();
     const sx = this._sx(p.x), sy = this._sy(p.d);
     for (let i = 0; i < 6; i++) this.ps.add({ x: sx, y: sy, vx: (Math.random() - .5) * 50, vy: (Math.random() - .5) * 50, size: 1, life: 0.35, color: "#ff8a8a" });
@@ -255,14 +272,14 @@ export class GatherScene {
   // push the diver along (nx,nd) by dist m (clamped to the river), with a matching velocity kick
   shove(nx, nd, dist) {
     const p = this.p;
-    p.x = clamp(p.x + nx * dist, 0, this.t.bounds.x[1]); p.d = clamp(p.d + nd * dist, this.t.surface_depth + 0.1, this.maxD);
+    p.x = clamp(p.x + nx * dist, 0, this.maxX); p.d = clamp(p.d + nd * dist, this.t.surface_depth + 0.1, this.maxD);
     p.vx = nx * this.swim * 2; p.vd = nd * this.swim * 2; this.unstick();
   }
   // diver body vs terrain: axis-separated so the diver slides along rock (contract zone d < 30: never blocked,
   // so movement there is exactly clamp(p + v·dt) as before)
   moveDiver(dx, dd) {
     const p = this.p, ter = this.ter, R = 0.45;
-    const nx = clamp(p.x + dx, 0, this.t.bounds.x[1]);
+    const nx = clamp(p.x + dx, 0, this.maxX);
     if (!ter.hits(nx, p.d, R)) p.x = nx;
     else if (!this.slip(nx, p.d, 0, 1, R, p.vd)) p.vx *= 0.2; // blocked: try sliding around a bump (step along d)
     const nd = clamp(p.d + dd, 0, this.maxD);
@@ -274,7 +291,7 @@ export class GatherScene {
   slip(x, d, ax, ad, R, pref = 0) {
     const p = this.p, ter = this.ter, s0 = pref > 0.3 ? 1 : -1, both = Math.abs(pref) <= 0.3;
     for (let k = 1; k <= 10; k++) for (let m = 0; m < (both ? 2 : 1); m++) { const s = m ? -s0 : s0;
-      const o = s * k * 0.05, xx = clamp(x + ax * o, 0, this.t.bounds.x[1]), dd = clamp(d + ad * o, 0, this.maxD);
+      const o = s * k * 0.05, xx = clamp(x + ax * o, 0, this.maxX), dd = clamp(d + ad * o, 0, this.maxD);
       if (!ter.hits(xx, dd, R)) { p.x = xx; p.d = dd; return true; }
     }
     return false;
@@ -282,7 +299,7 @@ export class GatherScene {
   // pushed into rock (knockback): pop out to the nearest open spot, upward first
   unstick() {
     const p = this.p, ter = this.ter, R = 0.45; if (!ter || !ter.hits(p.x, p.d, R)) return;
-    for (let k = 1; k <= 80; k++) for (const [ax, ad] of [[0, -1], [1, 0], [-1, 0], [0, 1]]) { const x = p.x + ax * k * 0.25, d = p.d + ad * k * 0.25; if (d <= this.maxD && x >= 0 && x <= this.t.bounds.x[1] && !ter.hits(x, d, R)) { p.x = x; p.d = d; return; } }
+    for (let k = 1; k <= 80; k++) for (const [ax, ad] of [[0, -1], [1, 0], [-1, 0], [0, 1]]) { const x = p.x + ax * k * 0.25, d = p.d + ad * k * 0.25; if (d <= this.maxD && x >= 0 && x <= this.maxX && !ter.hits(x, d, R)) { p.x = x; p.d = d; return; } }
   }
   openClam(k) {
     k.open = true; k.t = 0; const bonus = 30;
@@ -350,9 +367,9 @@ export class GatherScene {
 
     // --- oxygen / choke ---
     if (underwater) {
-      const deepZone = p.d > DEEP.zone;
+      const deepZone = p.d > DEEP.zone, zp = ZONES[zoneIndex(p.d)].pressure; // O₂ drain × the zone's pressure (gui_tuning.ZONES)
       if (deepZone && !this.deepSeen) { this.deepSeen = true; this.toast("Vùng nước sâu! Cá to có Máu ♥ — O₂ hao ×" + DEEP.pressure, "#9fd8ff"); sfx("whoosh"); }
-      this.oxy = clamp(this.oxy - dt * (this.sprint ? 2 : 1) * (deepZone ? DEEP.pressure : 1), 0, this.oxyMax);
+      this.oxy = clamp(this.oxy - dt * (this.sprint ? 2 : 1) * zp, 0, this.oxyMax);
       if (this.oxy <= 0) { this.zeroOxy += dt; if (this.zeroOxy >= t.choke_interval_ticks / this.hz) { this.zeroOxy -= t.choke_interval_ticks / this.hz; this.hurt("choke"); if (this.ended) return; } }
       if (Math.random() < 0.3) this.ps.add({ x: this._sx(p.x), y: this._sy(p.d) - 2, vy: -14, g: 0, wobble: 6, seed: Math.random() * 6, size: 1, life: 1.1, color: "rgba(220,245,255,.7)" });
     } else { this.oxy = clamp(this.oxy + t.oxygen_refill_per_tick * dt, 0, this.oxyMax); this.zeroOxy = 0; }
@@ -361,11 +378,15 @@ export class GatherScene {
     if (this.oxy < this.oxyMax * 0.25 && underwater && this.oxy > 0) { if (!this.lowOCue) { this.lowOCue = true; sfx("heartbeat", undefined, "[tim đập nhanh — oxy sắp hết]"); } }
     else if (this.oxy >= this.oxyMax * 0.25) this.lowOCue = false;
 
+    { const zi = zoneIndex(p.d); // zone banner whenever the diver crosses into another zone
+      if (zi !== this.zone) { this.zone = zi; this.banner = { i: zi, t: 0, first: zi > this.zoneMax }; if (zi > this.zoneMax) { this.zoneMax = zi; sfx("riser", 0.8); sfx("whoosh"); } else sfx("swish", 0.6); }
+      if (this.banner) { this.banner.t += dt; if (this.banner.t > 3) this.banner = null; } }
     if (this.invuln > 0) this.invuln -= dt;
     if (this.catchCd > 0) this.catchCd -= dt;
 
     // --- Cá Sấu Năm Chèo: move (patrol/chase/recoil), then at most one hit on the nearest ---
-    updateCrocs(this.crocs, dt, { px: p.x, pd: p.d, bx: t.bounds.x });
+    if (!this.crocEnv) this.crocEnv = { px: 0, pd: 0, bx: [0, this.maxX] };
+    this.crocEnv.px = p.x; this.crocEnv.pd = p.d; updateCrocs(this.crocs, dt, this.crocEnv);
     if (this.crocs.some((m) => m.gone)) this.crocs = this.crocs.filter((m) => !m.gone); // defeated: gone for this dive
     if (p.d >= 10 && this.invuln <= 0) { const m = crocHit(this.crocs, p.x, p.d); if (m) { this.crocBite(m); if (this.ended) return; } }
     { const n = crocNear(this.crocs, p.x, p.d); this.crocWarn = n && n.dist <= n.m.sp.detect_radius ? Math.min(1, this.crocWarn + dt * 4) : Math.max(0, this.crocWarn - dt * 3); }
@@ -395,7 +416,7 @@ export class GatherScene {
     if (this.time <= 0) { this.time = 0; this.endRun(this.hold.length ? "timeup" : "timeup_empty"); }
 
     // --- camera ---
-    this.cam = lerp(this.cam, clamp(p.x, W / 2 / this._scale(), t.bounds.x[1] - W / 2 / this._scale()), 0.1);
+    this.cam = lerp(this.cam, clamp(p.x, W / 2 / this._scale(), this.maxX - W / 2 / this._scale()), 0.1);
     const maxCamY = 58 + this.maxD * VS + 14 - H;
     this.camY = lerp(this.camY, clamp(58 + p.d * VS - H * 0.45, 0, maxCamY), 0.12);
     if (this.hintT > 0) this.hintT -= dt;
@@ -568,34 +589,42 @@ export class GatherScene {
       bank(c, 57, cam * sc * 0.3, "#6a4d7b", 3, 0.7);
       c.restore();
     }
-    // water body
-    bands(c, 0, surY, W, botY - surY + 30, WATER, 16);
+    // water body: the 0–60 m river exactly as before (bands + deep-zone gradient), then the big-map layers below 60 m
+    const y60 = this._sy(60);
+    if (y60 + 30 > 0) bands(c, 0, surY, W, y60 - surY + 30, WATER, 16);
     // deep zone: darker, colder water below DEEP.zone
-    { const zy = this._sy(DEEP.zone); const g = c.createLinearGradient(0, zy - 40, 0, botY); g.addColorStop(0, "rgba(30,20,12,0)"); g.addColorStop(0.25, "rgba(30,20,12,.45)"); g.addColorStop(1, "rgba(18,12,6,.8)"); c.fillStyle = g; c.fillRect(0, zy - 40, W, botY - zy + 40); }
-    // parallax underwater mountains (far uw_far + ridgeline, god rays, mid uw_mid arches, near ridges); clearer with depth
-    { const camD = (this.camY + H / 2 - 58) / VS; this.ter.drawBackdrop(c, cam * sc, this.camY, W, H, clamp((camD - 8) / 32, 0, 1), time, this._rays); }
-    { const zy = this._sy(DEEP.zone); R(c, 0, zy, W, 1, "rgba(230,200,140,.22)"); txt("— VÙNG SÂU · cá to —", W - 6, zy - 2, { size: 7, align: "right", color: "rgba(240,215,160,.65)", weight: 800 }); }
+    { const zy = this._sy(DEEP.zone); if (zy - 40 < H && y60 > 0) { const g = c.createLinearGradient(0, zy - 40, 0, y60); g.addColorStop(0, "rgba(30,20,12,0)"); g.addColorStop(0.25, "rgba(30,20,12,.45)"); g.addColorStop(1, "rgba(18,12,6,.8)"); c.fillStyle = g; c.fillRect(0, zy - 40, W, y60 - zy + 40); } }
+    // Tầng chạng vạng → Vực thẳm: opaque cold water, darker with depth (only the visible slice is filled)
+    if (y60 < H) { const g = c.createLinearGradient(0, y60, 0, botY); g.addColorStop(0, "#1c160e"); g.addColorStop(0.06, "#10181a"); g.addColorStop(0.4, "#08121a"); g.addColorStop(0.48, "#06070f"); g.addColorStop(1, "#020205");
+      const y0 = Math.max(0, y60), y1 = Math.min(H, botY + 10); c.fillStyle = g; c.fillRect(0, y0, W, y1 - y0); }
+    // parallax underwater mountains (far uw_far + ridgeline, god rays, mid uw_mid arches, near ridges); clearer with depth,
+    // faded out below the 60 m shelf
+    { const camD = (this.camY + H / 2 - 58) / VS; this.ter.drawBackdrop(c, cam * sc, this.camY, W, H, clamp((camD - 8) / 32, 0, 1), time, this._rays, clamp(1 - (camD - 56) / 12, 0, 1)); }
+    for (let i = 1; i < ZONES.length; i++) { const zy = this._sy(ZONES[i - 1].to); if (zy < -4 || zy > H + 4) continue;
+      R(c, 0, zy, W, 1, i === 1 ? "rgba(230,200,140,.22)" : i === 2 ? "rgba(140,220,255,.2)" : "rgba(200,160,255,.2)");
+      txt(ZONE_LINE[i], W - 6, zy - 2, { size: 7, align: "right", color: i === 1 ? "rgba(240,215,160,.65)" : i === 2 ? "rgba(160,225,255,.7)" : "rgba(210,180,255,.75)", weight: 800 }); }
     // parallax weeds + hyacinth mats
     for (let i = 0; i < 8; i++) { const wx = ((i * 190 + 40) - cam * sc) ; if (wx > -40 && wx < W + 40) hyacinth(c, wx, surY, 24 + (i % 3) * 10, time, i); }
-    { const ln = this.flood.lean * this.flood.vis; for (let i = 0; i < 24; i++) { const kx = (i * 46 - cam * sc * 1.1); const mx = ((kx % (W + 60)) + W + 60) % (W + 60) - 30; leanKelp(c, kelp, mx, botY, 24 + (i % 5) * 14, time, ln); } }
-    c.fillStyle = "#2c2419"; c.fillRect(0, botY - 4, W, H - botY + 8);
-    for (let i = 0; i < 10; i++) { const rx = (i * 70 - cam * sc); const mx = ((rx % (W + 80)) + W + 80) % (W + 80) - 40; rock(c, mx, botY - 3, 10 + (i % 3) * 5, 6); }
+    if (botY < H + 80) { const ln = this.flood.lean * this.flood.vis; for (let i = 0; i < 24; i++) { const kx = (i * 46 - cam * sc * 1.1); const mx = ((kx % (W + 60)) + W + 60) % (W + 60) - 30; leanKelp(c, kelp, mx, botY, 24 + (i % 5) * 14, time, ln); } }
+    if (botY < H + 20) { c.fillStyle = "#120e10"; c.fillRect(0, botY - 4, W, H - botY + 8); }
+    if (botY < H + 20) for (let i = 0; i < 10; i++) { const rx = (i * 70 - cam * sc); const mx = ((rx % (W + 80)) + W + 80) % (W + 80) - 40; rock(c, mx, botY - 3, 10 + (i % 3) * 5, 6); }
     // terrain (cached): contract-zone edge decoration + solid deep-zone rock, cave, channels, props on top
     { const ox = W / 2 - cam * sc; this.ter.draw(c, ox, surY, sc, VS, W, H);
-      if (botY > this._sy(DEEP.zone) && this._sy(DEEP.zone) < H) {
+      if (this._sy(DEEP.zone) < H) {
         this.chFx.draw(c, ox, surY, sc, VS, W, H, time);
         this.ter.drawCave(c, ox, surY, sc, VS, time, W, H);
         drawDeepScenery(c, ox, surY, sc, VS, time, W, H, kelp, rock, this.ter, this._leanAt);
       } }
     // depth guides
-    for (let d = 5; d <= this.maxD; d += 5) { const y = this._sy(d); R(c, 0, y, W, 1, "rgba(255,255,255,.05)"); txt(d + "m", 3, y - 1, { size: 7, color: "rgba(255,255,255,.3)", weight: 700 }); }
+    for (let d = 5; d <= this.maxD; d += 5) { const y = this._sy(d); if (y < -2 || y > H + 2) continue; R(c, 0, y, W, 1, "rgba(255,255,255,.05)"); txt(d + "m", 3, y - 1, { size: 7, color: "rgba(255,255,255,.3)", weight: 700 }); }
     // surface shimmer
     R(c, 0, surY, W, 1, "rgba(230,250,255,.85)");
     for (let x = 0; x < W; x += 8) R(c, x + Math.round(Math.sin(time * 2 + x) * 2), surY - 1, 4, 1, "rgba(255,255,255,.5)");
 
-    // dock
-    dock(c, this._sx(t.dock_pos[0]), surY, time);
-    if (this.hold.length && this.atDock()) { const pz = 0.5 + 0.5 * Math.sin(this.dockPulse * 6); txt("E: Cập bến ↑", this._sx(t.dock_pos[0]), surY - 26, { size: 8, align: "center", color: "#ffe14d", weight: 900, alpha: 0.6 + pz * 0.4, stroke: "#1a1220", sw: 2 }); }
+    // docks (big map: one per gui_tuning.DOCKS x; any one ends the dive)
+    if (surY > -40) { const at = this.hold.length ? this.dockAt() : null;
+      for (const dx of DOCKS) { const x = this._sx(dx); if (x < -60 || x > W + 60) continue; dock(c, x, surY, time);
+        if (at === dx) { const pz = 0.5 + 0.5 * Math.sin(this.dockPulse * 6); txt("E: Cập bến ↑", x, surY - 26, { size: 8, align: "center", color: "#ffe14d", weight: 900, alpha: 0.6 + pz * 0.4, stroke: "#1a1220", sw: 2 }); } } }
 
     // nodes
     for (const n of this.nodes) { const x = this._sx(n.pos[0]); if (x < -20 || x > W + 20) continue; const near = !(p.d > t.surface_depth) && Math.hypot(n.pos[0] - p.x, p.d) <= t.interact_radius && n.ready; nodeArt(c, n.kind, x, surY, time, n.ready); if (near && this.hold.length < this.cap) txt("E: hái", x, surY - 26, { size: 8, align: "center", color: "#ffd23a", weight: 900, stroke: "#1a1220", sw: 2 }); }
@@ -641,6 +670,7 @@ export class GatherScene {
     if (!blink) { // speargun in hand along the aim, then the diver rotated to the swim direction
       if (under && !this.harp) { const ax = Math.cos(this.aim) * this._scale(), ay = Math.sin(this.aim) * VS, n = Math.hypot(ax, ay) || 1; c.strokeStyle = "#5a5f6a"; c.lineWidth = 2; c.beginPath(); c.moveTo(px + ax / n * 3, py + ay / n * 3); c.lineTo(px + ax / n * 11, py + ay / n * 11); c.stroke(); c.lineWidth = 1; }
       diver(c, px, py, p.face, p.phase, Math.hypot(p.vx, p.vd) / this.swim, { grab: !!this.harp, tilt: this.tilt * p.face, basket: this.cap ? this.hold.length / this.cap : 0 }); }
+    this.drawDark(c, time); // Tầng chạng vạng / Vực thẳm: darkness with a light around the diver (+ flashlight cone)
     this.ps.draw(c, 0, 0);
     for (const q of this.sinks) { // thrown-out items sinking / drifting away from the diver
       c.save(); c.globalAlpha = clamp(q.life, 0, 1); c.translate(Math.round(this._sx(q.x)), Math.round(this._sy(q.d))); c.rotate(q.rot); c.drawImage(icon(q.kind), -5, -5, 10, 10); c.restore();
@@ -662,6 +692,34 @@ export class GatherScene {
     else if (this.hintT > 0 && !this.started && !this.inv) this.drawHint(c);
   }
 
+  // darkness of the water at depth d (0 above 58 m → ZONES[2].dark in twilight → ZONES[3].dark in the abyss)
+  darkAt(d) { const a = ZONES[2].dark, b = ZONES[3].dark; return d < 58 ? 0 : d < 68 ? a * (d - 58) / 10 : d < 100 ? a : d < 110 ? a + (b - a) * (d - 100) / 10 : b; }
+  // darkness layer on a reused offscreen canvas: fill, cut a soft light circle around the diver (destination-out) and in
+  // the abyss a flashlight cone along the aim; then glowing things (crystals, plankton, lure lights) on top
+  drawDark(c, time) {
+    const p = this.p, dk = this.darkAt(p.d) * (hcOn() ? 0.65 : 1); if (dk < 0.01) return; // high contrast: lighter darkness
+    if (!this.darkCv) { this.darkCv = document.createElement("canvas"); this.darkCv.width = W; this.darkCv.height = H; }
+    const g = this.darkCv.getContext("2d"), px = this._sx(p.x), py = this._sy(p.d), abyss = p.d >= 100, k = clamp((p.d - 100) / 10, 0, 1);
+    g.globalCompositeOperation = "source-over"; g.clearRect(0, 0, W, H); g.fillStyle = `rgba(2,4,12,${dk})`; g.fillRect(0, 0, W, H);
+    g.globalCompositeOperation = "destination-out";
+    const r1 = 120 - 45 * k, rg = g.createRadialGradient(px, py, 12, px, py, r1); rg.addColorStop(0, "rgba(0,0,0,1)"); rg.addColorStop(0.55, "rgba(0,0,0,.75)"); rg.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = rg; g.beginPath(); g.arc(px, py, r1, 0, TAU); g.fill();
+    const ang = Math.atan2(Math.sin(this.aim) * VS, Math.cos(this.aim) * this._scale());
+    if (abyss) { // flashlight cone
+      g.save(); g.translate(px, py); g.rotate(ang);
+      const lg = g.createLinearGradient(0, 0, 190, 0); lg.addColorStop(0, "rgba(0,0,0,.95)"); lg.addColorStop(0.7, "rgba(0,0,0,.6)"); lg.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = lg; g.globalAlpha = k; g.beginPath(); g.moveTo(4, -3); g.lineTo(190, -52); g.lineTo(190, 52); g.lineTo(4, 3); g.closePath(); g.fill(); g.restore(); g.globalAlpha = 1;
+    }
+    c.drawImage(this.darkCv, 0, 0);
+    if (abyss) { c.save(); c.globalCompositeOperation = "lighter"; c.translate(px, py); c.rotate(ang); c.globalAlpha = 0.07 * k * (0.9 + 0.1 * Math.sin(time * 13)); c.fillStyle = "#fff0c0"; c.beginPath(); c.moveTo(4, -2); c.lineTo(170, -40); c.lineTo(170, 40); c.lineTo(4, 2); c.closePath(); c.fill(); c.restore(); }
+    const ox = W / 2 - this.cam * this._scale(), sy0 = this._surfaceY();
+    drawPlankton(c, ox, sy0, this._scale(), VS, time, W, H);
+    this.ter.drawGlow(c, ox, sy0, this._scale(), VS, time, W, H);
+    c.save(); c.globalCompositeOperation = "lighter"; // lure lights of the twilight species (so they can be spotted in the dark)
+    for (const f of this.deep) { if (f.caught || !f.sp.glow) continue; const x = this._sx(f.x), y = this._sy(f.d); if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+      const a = 0.45 + 0.35 * Math.sin(time * 3 + f.phase); c.globalAlpha = a * 0.3; c.fillStyle = f.sp.glow; c.beginPath(); c.arc(x + f.face * 8, y - 2, 6, 0, TAU); c.fill(); c.globalAlpha = a; c.fillRect(Math.round(x + f.face * 8) - 1, Math.round(y - 3), 2, 2); }
+    c.restore();
+  }
   drawHUD(c, time) {
     const u = screen.ui, p = this.p, under = p.d > this.t.surface_depth;
     // "Thủy quái!" — purple screen border while a monster is within its detect radius
@@ -696,9 +754,16 @@ export class GatherScene {
     if (this.oxy <= 0 && under) txt("Hết hơi!", W / 2, H / 2 - 40, HC ? { size: 22, align: "center", color: "#fff", weight: 900, stroke: "#000", sw: 6 } : { size: 16, align: "center", color: "#ff5a5a", weight: 900, stroke: "#1a1220", sw: 3, alpha: 0.6 + 0.4 * Math.sin(time * 10) });
     // HP hearts + depth
     for (let i = 0; i < this.hpMax; i++) { const hx = ox + 6 + i * 12, hy = oy + oh + 8; this.heart(u, hx, hy, i < this.hp, time); }
-    const deepNow = p.d > DEEP.zone;
+    const zi = zoneIndex(p.d), Z = ZONES[zi];
     txt("Máu " + this.hp + "/" + this.hpMax, ox + 6, oy + oh + 24, { size: 7, color: "#ff6b6b", weight: 900, stroke: "#06101e", sw: 2 });
-    txt("↓ " + Math.round(p.d) + "m" + (deepNow ? "  O₂×" + DEEP.pressure : ""), ox + 6 + this.hpMax * 12 + 4, oy + oh + 12, { size: 8, color: deepNow ? "#f0d9a0" : "#fff3dc", weight: 900, stroke: "#06101e", sw: 2 });
+    { const dx = ox + 6 + this.hpMax * 12 + 4, lab = "↓ " + Math.round(p.d) + "m"; // depth meter + zone name (+ O₂ pressure)
+      txt(lab, dx, oy + oh + 12, { size: 8, color: zi ? Z.col : "#fff3dc", weight: 900, stroke: "#06101e", sw: 2 });
+      txt(Z.name + (Z.pressure > 1 ? " · O₂×" + Z.pressure : ""), dx + measure(lab, 8, 900) + 4, oy + oh + 12, { size: 7, color: Z.col, weight: 800, stroke: "#06101e", sw: 2 }); }
+    // nearest dock: when the basket already holds the day's list, or O₂ runs low
+    { const dh = this.dockHint(); if (dh) { const lowO2 = this.oxy < this.oxyMax * 0.35 && under, lab = "⚓ Bến gần nhất " + Math.round(dh.dist) + "m " + (dh.x > p.x + 1 ? "→" : dh.x < p.x - 1 ? "←" : "↑");
+      panel(ox, oy + oh + 30, 128, 12, { fill: "rgba(8,20,38,.85)", border: lowO2 ? "#ff8a8a" : "#7dffb0", r: 5 });
+      txt(lab, ox + 64, oy + oh + 39, { size: 7, align: "center", color: lowO2 ? "#ffb0b0" : "#c8ffd8", weight: 900 }); } }
+    if (this.banner) this.drawBanner(u, time);
     // catch cooldown (harpoon in flight counts as busy)
     { const cdMax = this.t.catch_cooldown_s || 0.5, busy = !!this.harp, k = busy ? 0 : 1 - clamp(this.catchCd / cdMax, 0, 1);
       const cx = ox + 50, cy = oy + oh + 18; panel(cx, cy, 50, 9, { fill: "rgba(4,16,30,.8)", border: k >= 1 ? "#7dffb0" : "#5a6a7a", r: 4 });
@@ -771,6 +836,20 @@ export class GatherScene {
     if (this.chanNow && this.p.d > DEEP.zone) txt(this.chanNow.vx ? "Dòng ngầm ⇢ đi nhanh!" : "Dòng trồi ↑", W / 2, H - 16, { size: 8, align: "center", color: "#f0d9a0", weight: 900, stroke: "#1a1208", sw: 2, alpha: 0.8 });
   }
   // edge-of-screen arrow + fish icon + distance to the nearest school of each needed kind that is off-screen
+  // nearest dock hint (big map): { x, dist } when the basket has the needed items or O₂ is low (< 35 %, underwater), else null
+  dockHint() {
+    if (!this.hold.length || this.ended) return null;
+    const lowO2 = this.oxy < this.oxyMax * 0.35 && this.p.d > this.t.surface_depth;
+    if (!lowO2 && !(this.need && this.needMet())) return null;
+    const nd = nearestDock(this.p.x); return { x: nd.x, dist: Math.hypot(nd.dist, this.p.d) };
+  }
+  // zone banner (3 s) when the diver enters another depth zone
+  drawBanner(u, time) {
+    const b = this.banner, Z = ZONES[b.i], a = clamp(Math.min(b.t / 0.3, (3 - b.t) / 0.6), 0, 1), y = 78;
+    panel(W / 2 - 110, y - 18, 220, 34, { fill: "rgba(4,10,24,.82)", border: Z.col, r: 8, alpha: a });
+    txt(Z.name.toUpperCase(), W / 2, y - 1, { size: 15, align: "center", color: Z.col, weight: 900, italic: true, stroke: "#06101e", sw: 3, alpha: a });
+    txt(zoneTop(b.i) + "–" + Z.to + " m" + (Z.pressure > 1 ? " · O₂ hao ×" + Z.pressure : "") + (b.i >= 2 ? " · tối — đèn quanh người" : ""), W / 2, y + 11, { size: 7, align: "center", color: "#e8f4ff", weight: 800, alpha: a });
+  }
   drawRadar(u, time) {
     const cx = W / 2, cy = H / 2, m = 22;
     for (const r of this.radarTargets()) {
@@ -785,6 +864,14 @@ export class GatherScene {
       u.restore(); u.save(); u.globalAlpha = a; u.imageSmoothingEnabled = false; u.drawImage(icon(r.kind), ax - 5, ay - 5, 10, 10); u.restore();
       txt(Math.round(r.dist) + "m" + (r.wait ? " · mọc " + Math.ceil(r.wait) + "s" : ""), ax, ay + (ay > cy ? -12 : 18), { size: 7, align: "center", color: "#ffe9b0", weight: 900, stroke: "#1a1220", sw: 2, alpha: a });
     }
+    const dh = this.dockHint(); // nearest dock arrow (big map) when it is off screen
+    if (dh) { const tx = this._sx(dh.x), ty = this._surfaceY();
+      if (!(tx >= 0 && tx <= W && ty >= 0 && ty <= H)) {
+        const dx = tx - cx, dy = ty - cy, k = Math.min((W / 2 - m) / Math.abs(dx || 1e-6), (H / 2 - m) / Math.abs(dy || 1e-6)), ax = cx + dx * k, ay = cy + dy * k, a = 0.75 + 0.25 * Math.sin(time * 5);
+        u.save(); u.globalAlpha = a; u.fillStyle = "rgba(8,20,38,.9)"; u.beginPath(); u.arc(ax, ay, 9, 0, TAU); u.fill(); u.strokeStyle = "#7dffb0"; u.lineWidth = 1; u.stroke();
+        u.translate(ax, ay); u.rotate(Math.atan2(dy, dx)); u.fillStyle = "#7dffb0"; u.beginPath(); u.moveTo(15, 0); u.lineTo(9, -4); u.lineTo(9, 4); u.closePath(); u.fill(); u.restore();
+        txt("⚓", ax, ay + 3, { size: 9, align: "center", color: "#c8ffd8", weight: 900, alpha: a });
+        txt("Bến " + Math.round(dh.dist) + "m", ax, ay + (ay > cy ? -12 : 18), { size: 7, align: "center", color: "#c8ffd8", weight: 900, stroke: "#1a1220", sw: 2, alpha: a }); } }
   }
   hpBar(c, x, y, w, hp, max, a = 1, label = null) {
     const bw = Math.round(w), bx = Math.round(x - bw / 2), by = Math.round(y);
@@ -951,7 +1038,7 @@ export class GatherScene {
     const a = clamp(this.hintT, 0, 1);
     panel(W / 2 - 92, H / 2 - 20, 184, 40, { fill: `rgba(8,18,34,${0.85 * a})`, border: "#f3d27a", r: 6, alpha: a });
     txt("Lặn xuống bắt cá & hái bông", W / 2, H / 2 - 4, { size: 10, align: "center", color: "#fff", weight: 900, alpha: a });
-    txt("Coi chừng Cá Sấu Năm Chèo dưới 10 m · canh O₂!", W / 2, H / 2 + 10, { size: 8, align: "center", color: "#ffd23a", weight: 700, alpha: a });
+    txt("Sông rộng " + MAP_WIDTH_M + " m, sâu " + MAP_DEPTH_M + " m · 3 bến ⚓ · canh O₂!", W / 2, H / 2 + 10, { size: 8, align: "center", color: "#ffd23a", weight: 700, alpha: a });
   }
   drawResult(c, time) {
     const r = this.result, k = clamp(r.t / 0.5, 0, 1);
