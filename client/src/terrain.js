@@ -30,6 +30,7 @@ const SPAL = ["#4d6233", "#3b4a2a", "#3f3627", "#342c20", "#2b241a", "#231d15"];
 const TPAL = ["#3d6a66", "#2c4d4c", "#24393c", "#1d2d31", "#172328", "#111a1f"];  // twilight: cold slate / teal
 const APAL = ["#4a3a6a", "#33284a", "#251d36", "#1b1528", "#140f1e", "#0e0a15"];  // abyss: violet-black
 const PADT = 8, PADB = 16, B = 2; // chunk canvas pads (moss overflow), block size (px)
+const PREFETCH_MS = 3;            // per-frame time budget for baking chunks that are not on screen yet
 
 export class Terrain {
   constructor(seed = 1) {
@@ -204,7 +205,9 @@ export class Terrain {
   // ---------- drawing: lazy chunks ----------
   // bake one CHUNK_W_M × CHUNK_H_M chunk (ix, iy) at sx px/m horizontally, sy px/m vertically. Blocks of B px on the
   // GLOBAL block grid (seamless between chunks); solid() is sampled once per block into a grid with a 1-block margin.
-  bakeChunk(ix, iy, sx, sy) {
+  bakeChunk(ix, iy, sx, sy) { const it = this.bakeGen(ix, iy, sx, sy); let r = it.next(); while (!r.done) r = it.next(); return r.value; }
+  // generator form: yields every few block rows so a prefetch can be spread over frames (time budget in draw())
+  *bakeGen(ix, iy, sx, sy) {
     const tiles = img("bg/uw_tiles.png"), moss = ready(tiles);
     const X0 = Math.round(ix * CHUNK_W_M * sx), X1 = Math.round(Math.min(MW, (ix + 1) * CHUNK_W_M) * sx);
     const Y0 = Math.round(iy * CHUNK_H_M * sy), Y1 = Math.round(Math.min(MD, (iy + 1) * CHUNK_H_M) * sy);
@@ -213,7 +216,7 @@ export class Terrain {
     const i0 = Math.floor(X0 / B), i1 = Math.ceil(X1 / B), j0 = Math.floor(Y0 / B), j1 = Math.ceil(Y1 / B);
     const cols = i1 - i0, rows = j1 - j0, gw = cols + 2, grid = new Uint8Array(gw * (rows + 2));
     const bx = (i) => (i + 0.5) * B / sx, bd = (jj) => (jj + 0.5) * B / sy;
-    for (let jj = -1; jj <= rows; jj++) { const d = bd(j0 + jj); for (let ii = -1; ii <= cols; ii++) grid[(jj + 1) * gw + ii + 1] = this.solid(bx(i0 + ii), d) ? 1 : 0; }
+    for (let jj = -1; jj <= rows; jj++) { const d = bd(j0 + jj); for (let ii = -1; ii <= cols; ii++) grid[(jj + 1) * gw + ii + 1] = this.solid(bx(i0 + ii), d) ? 1 : 0; if ((jj & 7) === 7) yield; }
     const S = (ii, jj) => grid[(jj + 1) * gw + ii + 1];
     const above = new Int16Array(cols); // solid blocks directly above (edge distance), per column, seeded from above the chunk
     for (let ii = 0; ii < cols; ii++) { let n = 0; while (n < 8 && this.solid(bx(i0 + ii), bd(j0 - 1 - n))) n++; above[ii] = n; }
@@ -225,6 +228,7 @@ export class Terrain {
     }
     const c0 = this.cave;
     for (let jj = 0; jj < rows; jj++) {
+      if ((jj & 15) === 15) yield;
       const j = j0 + jj, d = bd(j); if (d < 2) { above.fill(0); continue; }
       const sh = d < ZONE, layer = sh ? SPAL : d <= 64 ? PAL : d <= 105 ? TPAL : APAL;
       const under0 = sh ? "#19140e" : layer === PAL ? "#1a130b" : layer === TPAL ? "#0c1316" : "#07050b", side0 = sh ? "#3d3528" : layer === PAL ? "#4f4129" : layer === TPAL ? "#2a3c40" : "#2a2038";
@@ -260,11 +264,13 @@ export class Terrain {
     this.bakes++;
     return { cv, X0, Y0, moss };
   }
-  // one chunk (built on demand); key ix*1000+iy; LRU order = Map insertion order
+  // one chunk (built on demand, finishing a pending prefetch job for it); key ix*1000+iy; LRU order = Map insertion order
   chunk(ix, iy, sx, sy) {
     const key = ix * 1000 + iy; let ch = this.chunks.get(key);
     if (ch) { this.chunks.delete(key); this.chunks.set(key, ch); return ch; }
-    ch = this.bakeChunk(ix, iy, sx, sy); this.bakedFrame = this.frame; this.chunks.set(key, ch);
+    if (this.job && this.job.key === key) { let r = this.job.it.next(); while (!r.done) r = this.job.it.next(); ch = r.value; this.job = null; }
+    else ch = this.bakeChunk(ix, iy, sx, sy);
+    this.bakedFrame = this.frame; this.chunks.set(key, ch);
     while (this.chunks.size > CHUNK_CACHE) this.chunks.delete(this.chunks.keys().next().value);
     return ch;
   }
@@ -274,7 +280,7 @@ export class Terrain {
   // neighbouring chunk (or refreshes one baked before the moss tiles loaded) when nothing was baked this frame
   draw(c, ox, oy, sx, sy, W, H) {
     this.frame++;
-    if (this.chS !== sx) { this.chunks.clear(); this.chS = sx; }
+    if (this.chS !== sx) { this.chunks.clear(); this.chS = sx; this.job = null; }
     const nx = Math.ceil(MW / CHUNK_W_M), ny = Math.ceil(MD / CHUNK_H_M);
     const ixa = Math.max(0, Math.floor(-ox / sx / CHUNK_W_M)), ixb = Math.min(nx - 1, Math.floor((W - ox) / sx / CHUNK_W_M));
     const iya = Math.max(0, Math.floor((-oy - PADB) / sy / CHUNK_H_M)), iyb = Math.min(ny - 1, Math.floor((H - oy + PADT) / sy / CHUNK_H_M));
@@ -287,13 +293,21 @@ export class Terrain {
     }
     c.imageSmoothingEnabled = prev;
     if (this.bakedFrame === this.frame) return;
-    const tilesOk = ready(img("bg/uw_tiles.png"));
-    for (let iy = iya; iy <= iyb; iy++) for (let ix = ixa; ix <= ixb; ix++) { const key = ix * 1000 + iy, ch = this.chunks.get(key); // stale (no moss yet)
-      if (ch && !ch.moss && tilesOk) { this.chunks.set(key, this.bakeChunk(ix, iy, sx, sy)); this.bakedFrame = this.frame; return; } }
-    for (let iy = iya - 1; iy <= iyb + 1; iy++) for (let ix = ixa - 1; ix <= ixb + 1; ix++) { // prefetch one neighbour
-      if (ix < 0 || iy < 0 || ix >= nx || iy >= ny || this.chunks.has(ix * 1000 + iy)) continue;
-      this.chunk(ix, iy, sx, sy); return;
+    // background work, PREFETCH_MS per frame: continue the pending job, else start one (a visible chunk baked before the
+    // moss tiles loaded, else a missing neighbour of the visible ones)
+    if (!this.job) {
+      const tilesOk = ready(img("bg/uw_tiles.png"));
+      for (let iy = iya; iy <= iyb && !this.job; iy++) for (let ix = ixa; ix <= ixb; ix++) { const ch = this.chunks.get(ix * 1000 + iy);
+        if (ch && !ch.moss && tilesOk) { this.job = { key: ix * 1000 + iy, it: this.bakeGen(ix, iy, sx, sy), stale: true }; break; } }
+      for (let iy = iya - 1; iy <= iyb + 1 && !this.job; iy++) for (let ix = ixa - 1; ix <= ixb + 1; ix++) {
+        if (ix < 0 || iy < 0 || ix >= nx || iy >= ny || this.chunks.has(ix * 1000 + iy)) continue;
+        this.job = { key: ix * 1000 + iy, it: this.bakeGen(ix, iy, sx, sy) }; break;
+      }
+      if (!this.job) return;
     }
+    const t0 = performance.now(), j = this.job;
+    for (;;) { const r = j.it.next(); if (r.done) { this.job = null; this.chunks.delete(j.key); this.chunks.set(j.key, r.value); while (this.chunks.size > CHUNK_CACHE) this.chunks.delete(this.chunks.keys().next().value); return; }
+      if (performance.now() - t0 > PREFETCH_MS) return; }
   }
   // abyss crystals + twilight stalactite glow (call AFTER the darkness overlay so they shine)
   drawGlow(c, ox, oy, sx, sy, t, W, H) {
